@@ -1,0 +1,13 @@
+venv/
+__pycache__/
+*.pyc
+medpay_training_data/
+version_3.2_model/
+Version_3.1/
+version_3.2 model/
+medpay/
+outputs/
+*.log
+.env
+catalog_embeddings.npy
+model/
