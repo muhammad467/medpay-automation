@@ -370,7 +370,7 @@ if page == "catalog":
         return True
 
     if DEFAULT_CATALOG.exists():
-        st.info(f"📂 Найден файл каталога по умолчанию: `services_3.xlsx`")
+        st.info(f"📂 Найден файл каталога по умолчанию: `services (3).xlsx`")
         col1, col2 = st.columns(2)
         with col1:
             if st.button("✅ Использовать каталог по умолчанию",
