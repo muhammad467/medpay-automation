@@ -203,8 +203,8 @@ def _parse_pricelist_xlsx(file_bytes: bytes) -> list:
                  if price_col else "9999999")
         stype = (clean_cell(str(row.get(type_col, "Диагностика")))
                  if type_col else "Диагностика")
-        if stype not in ALLOWED_TYPES:
-            stype = "Диагностика"
+        # Keep original type — non-standard types are shown as warning to user
+        # and excluded from ready file in exporter. Don't silently convert here.
         svcs.append({"service_name": nm, "type": stype, "price": price})
     return svcs
 
@@ -293,7 +293,7 @@ with st.sidebar:
             rows_s = []
             if em.loaded:
                 # Use E5 model — same as ID search
-                candidates = em.search(sq.strip(), k=8)
+                candidates = em.search(sq.strip(), k=15)
                 seen_s: set = set()
                 for c in candidates:
                     sid = c["service_id"]
@@ -305,17 +305,17 @@ with st.sidebar:
                     name = c["name_ru"] or c["name_uz"]
                     rows_s.append({
                         "ID": sid,
-                        "Название": name[:50],
+                        "Название": name[:60],
                         "Тип": ct,
                         "%": c["score"],
                     })
-                    if len(rows_s) == 5:
+                    if len(rows_s) == 10:
                         break
             else:
                 # Fuzzy fallback
                 corp_s = build_search_corpus(cat_df)
                 hits   = rfp.extract(sq.lower(), [c[0] for c in corp_s],
-                                     scorer=rff.token_sort_ratio, limit=8, score_cutoff=40)
+                                     scorer=rff.token_sort_ratio, limit=15, score_cutoff=40)
                 seen_s: set = set()
                 for _, sc, ix in hits:
                     _, orig, sid = corp_s[ix]
@@ -324,8 +324,8 @@ with st.sidebar:
                     seen_s.add(sid)
                     cr = cat_df[cat_df["ID number"] == sid]
                     ct = cr.iloc[0]["type"] if not cr.empty else "?"
-                    rows_s.append({"ID": sid, "Название": orig[:50], "Тип": ct, "%": sc})
-                    if len(rows_s) == 5:
+                    rows_s.append({"ID": sid, "Название": orig[:60], "Тип": ct, "%": sc})
+                    if len(rows_s) == 10:
                         break
             if rows_s:
                 st.dataframe(pd.DataFrame(rows_s), use_container_width=True, hide_index=True)
@@ -596,12 +596,33 @@ elif page == "work":
         svcs = st.session_state["services"]
         n_ana = sum(1 for s in svcs if s["type"] == "Анализы")
         n_dia = sum(1 for s in svcs if s["type"] == "Диагностика")
+        n_other = len(svcs) - n_ana - n_dia
 
         st.markdown(f"### 📋 Прайс-лист · {clinic_nm} / {district}")
         st.caption(
             f"**{len(svcs)}** услуг (Анализы: {n_ana}, Диагностика: {n_dia}). "
             "Проверьте, отредактируйте при необходимости, затем нажмите «Далее»."
         )
+
+        # ── Warning: non-standard service types ──────────────────────────────
+        other_svcs = [s for s in svcs if s["type"] not in ("Анализы", "Диагностика")]
+        if other_svcs:
+            with st.expander(
+                f"⚠️ Найдено {len(other_svcs)} услуг с нестандартным типом — нажмите чтобы посмотреть",
+                expanded=True
+            ):
+                st.warning(
+                    "Следующие услуги имеют тип, отличный от «Анализы» и «Диагностика» "
+                    "(например: Врачебные услуги, Лечебные процедуры, Консультации и т.д.). "
+                    "Они **не будут включены** в итоговый файл. "
+                    "Вы можете изменить тип вручную в таблице ниже."
+                )
+                other_df = pd.DataFrame([
+                    {"#": i+1, "Название услуги": s["service_name"],
+                     "Тип (определён как)": s["type"], "Цена": s["price"]}
+                    for i, s in enumerate(other_svcs)
+                ])
+                st.dataframe(other_df, use_container_width=True, hide_index=True)
 
         price_df = pd.DataFrame([
             {"#": i+1, "Название услуги": s["service_name"],
