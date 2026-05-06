@@ -124,67 +124,36 @@ def _run_matching(services: list, catalog_df) -> list:
 
         # Build comment — include top-2 alternatives for unmatched/low confidence
 # Build comment with top-2 alternatives for low confidence matches
-        comment = m["comment"]
-        top3    = m.get("top3_candidates", [])
-        if m["matched_id"] == "-" and len(top3) > 0:
-            # Unmatched — show best candidates as suggestions
+        
+        comment = hit["comment"]
+        top3    = hit.get("top3_candidates", [])
+        if hit["matched_id"] == "-" and top3:
             alts = "; ".join(
-                f'{c["name"][:35]} ({c["score"]}%)'
-                for c in top3[:2]
-                if c["score"] >= 55
+                f'{c["service_id"]} {c["name"][:25]} ({c["score"]}%)'
+                for c in top3[:2] if c["score"] >= 55
             )
             if alts:
                 comment = f'Не найдено | Варианты: {alts}'
-        elif m["confidence"] < 75 and len(top3) > 1:
-            # Low confidence match — show alternatives
+        elif hit["confidence"] < 75 and len(top3) > 1:
             alts = "; ".join(
-                f'{c["name"][:35]} ({c["score"]}%)'
-                for c in top3[1:3]
-                if c["score"] >= 60
+                f'{c["service_id"]} ({c["score"]}%)'
+                for c in top3[1:3] if c["score"] >= 60
             )
             if alts:
-                comment = f'{m["comment"]} | Альт: {alts}'
+                comment = f'{hit["comment"]} | Альт: {alts}'
 
-        rows.append({
-            "Название в MedPay":  m["matched_name"],
-            "Название в клинике": name,
-            "ID":                 m["matched_id"],
-            "Уверенность":        m["confidence"],
+        results.append({
+            "Название в MedPay":  hit["matched_name"],
+            "Название в клинике": nm,
+            "ID":                 hit["matched_id"],
+            "Уверенность":        hit["confidence"],
             "Комментарий":        comment,
             "Цена":               price,
             "Тип услуг":          svc_type,
-            "top3":               m.get("top3_candidates", []),
-            "method":             m.get("method", ""),
+            "top3":               top3,
+            "method":             hit.get("method", ""),
         })
-#     comment = hit["comment"]
-    #     top3    = hit.get("top3_candidates", [])
-    #     if hit["matched_id"] == "-" and top3:
-    #         alts = "; ".join(
-    #             f'{c["service_id"]} {c["name"][:25]} ({c["score"]}%)'
-    #             for c in top3[:2] if c["score"] >= 55
-    #         )
-    #         if alts:
-    #             comment = f'Не найдено | Варианты: {alts}'
-    #     elif hit["confidence"] < 75 and len(top3) > 1:
-    #         alts = "; ".join(
-    #             f'{c["service_id"]} ({c["score"]}%)'
-    #             for c in top3[1:3] if c["score"] >= 60
-    #         )
-    #         if alts:
-    #             comment = f'{hit["comment"]} | Альт: {alts}'
-
-    #     results.append({
-    #         "Название в MedPay":  hit["matched_name"],
-    #         "Название в клинике": nm,
-    #         "ID":                 hit["matched_id"],
-    #         "Уверенность":        hit["confidence"],
-    #         "Комментарий":        comment,
-    #         "Цена":               price,
-    #         "Тип услуг":          svc_type,
-    #         "top3":               top3,
-    #         "method":             hit.get("method", ""),
-    #     })
-    # return results
+    return results
 
 
 def _make_ready(matched_rows: list, catalog_df) -> pd.DataFrame:
