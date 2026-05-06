@@ -405,21 +405,43 @@ if page == "catalog":
         "Обязательные колонки: `ID number`, `Name RU`, `Name UZ`, `type`, `Name KR`."
     )
 
-    cat_file = st.file_uploader("Excel-файл каталога (.xlsx)",
-                                type=["xlsx"], key="cat_up")
-    if cat_file:
-        with st.spinner("Загрузка каталога..."):
-            df_cat, err = load_catalog(cat_file)
+    # ── Auto-load default catalog if it exists on disk ────────────────────────
+    DEFAULT_CATALOG = Path(__file__).parent / "services (3).xlsx"
+
+    def _load_and_set(file_source):
+        df_cat, err = load_catalog(file_source)
         if err:
             st.error(f"❌ {err}")
-        else:
-            st.session_state["catalog_df"] = df_cat
-            st.success(f"✅ {get_catalog_summary(df_cat)}")
-            for t, n in df_cat["type"].value_counts().items():
-                st.write(f"• {t}: **{n:,}**")
-            st.button("➡️ Выбрать режим и тип входных данных",
-                      type="primary", on_click=_go, args=("setup",))
+            return False
+        st.session_state["catalog_df"] = df_cat
+        st.success(f"✅ {get_catalog_summary(df_cat)}")
+        for t, n in df_cat["type"].value_counts().items():
+            st.write(f"• {t}: **{n:,}**")
+        return True
 
+    if DEFAULT_CATALOG.exists():
+        st.info(f"📂 Найден файл каталога по умолчанию: `services (3).xlsx`")
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("✅ Использовать каталог по умолчанию",
+                         type="primary", key="btn_default_cat"):
+                with st.spinner("Загрузка каталога..."):
+                    if _load_and_set(str(DEFAULT_CATALOG)):
+                        _go("setup")
+        with col2:
+            st.caption("или загрузите другой файл ↓")
+
+    # ── Manual upload option ──────────────────────────────────────────────────
+    cat_file = st.file_uploader(
+        "Загрузить другой каталог (.xlsx)" if DEFAULT_CATALOG.exists()
+        else "Excel-файл каталога (.xlsx)",
+        type=["xlsx"], key="cat_up"
+    )
+    if cat_file:
+        with st.spinner("Загрузка каталога..."):
+            if _load_and_set(cat_file):
+                st.button("➡️ Выбрать режим и тип входных данных",
+                          type="primary", on_click=_go, args=("setup",))
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PAGE: SETUP — choose mode + entry, upload file, set clinic name
