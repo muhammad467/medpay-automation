@@ -19,7 +19,6 @@ Pages   : catalog  →  setup  →  work  →  (done)
 import io
 import re
 import pandas as pd
-from pathlib import Path
 import streamlit as st
 from rapidfuzz import process as rfp, fuzz as rff
 
@@ -181,24 +180,44 @@ def _reset_clinic():
         st.session_state[k] = _DEFAULTS[k]
 
 
+def _transliterate_latin_to_russian(text: str) -> str:
+    """
+    Detect if service name is in Latin script (Uzbek Latin or English)
+    and transliterate to Russian for better matching.
+    Only applied when text is predominantly Latin.
+    """
+    if not text:
+        return text
+    latin_chars  = sum(1 for c in text if c.isascii() and c.isalpha())
+    cyrillic_chars = sum(1 for c in text if '\u0400' <= c <= '\u04FF')
+    # Only transliterate if mostly Latin (not mixed medical abbreviations)
+    if latin_chars == 0 or cyrillic_chars > latin_chars:
+        return text
+    # Use uz_latin_to_cyrillic from utils for Uzbek Latin → Cyrillic
+    from modules.utils import uz_latin_to_cyrillic
+    return uz_latin_to_cyrillic(text)
+
+
 def _parse_pricelist_xlsx(file_bytes: bytes) -> list:
     """Parse an uploaded price_list.xlsx into services list."""
     df   = pd.read_excel(io.BytesIO(file_bytes), dtype=str)
     cols = df.columns.tolist()
     name_col  = next((c for c in cols if any(
-        kw in c.lower() for kw in ("назван", "услуг", "name", "service")
+        kw in c.lower() for kw in ("назван", "услуг", "name", "service", "xizmat", "nomi")
     )), cols[1] if len(cols) > 1 else cols[0])
     price_col = next((c for c in cols if any(
-        kw in c.lower() for kw in ("цена", "price", "стоим")
+        kw in c.lower() for kw in ("цена", "price", "стоим", "narx", "нарх")
     )), None)
     type_col  = next((c for c in cols if any(
-        kw in c.lower() for kw in ("тип", "type")
+        kw in c.lower() for kw in ("тип", "type", "tur")
     )), None)
     svcs = []
     for _, row in df.iterrows():
         nm = clean_cell(str(row.get(name_col, "")))
         if not nm:
             continue
+        # Transliterate Latin service names to Russian/Cyrillic for better matching
+        nm_for_matching = _transliterate_latin_to_russian(nm)
         from modules.exporter import _normalize_price
         price = (_normalize_price(clean_price(str(row.get(price_col, ""))))
                  if price_col else "9999999")
@@ -206,7 +225,12 @@ def _parse_pricelist_xlsx(file_bytes: bytes) -> list:
                  if type_col else "Диагностика")
         # Keep original type — non-standard types are shown as warning to user
         # and excluded from ready file in exporter. Don't silently convert here.
-        svcs.append({"service_name": nm, "type": stype, "price": price})
+        svcs.append({
+            "service_name":          nm_for_matching,  # transliterated for matching
+            "service_name_original": nm,               # original for display
+            "type":                  stype,
+            "price":                 price,
+        })
     return svcs
 
 
@@ -293,10 +317,12 @@ with st.sidebar:
             em = _get_embedding_matcher()
             rows_s = []
             if em.loaded:
-                # Use E5 model — same as ID search
-                candidates = em.search(sq.strip(), k=15)
+                # Use E5 model — show all results above 50% similarity
+                candidates = em.search(sq.strip(), k=9823)
                 seen_s: set = set()
                 for c in candidates:
+                    if c["score"] < 50:
+                        break  # Results are sorted by score, stop when too low
                     sid = c["service_id"]
                     if sid in seen_s:
                         continue
@@ -310,13 +336,11 @@ with st.sidebar:
                         "Тип": ct,
                         "%": c["score"],
                     })
-                    if len(rows_s) == 10:
-                        break
             else:
-                # Fuzzy fallback
+                # Fuzzy fallback — show all results above 40%
                 corp_s = build_search_corpus(cat_df)
                 hits   = rfp.extract(sq.lower(), [c[0] for c in corp_s],
-                                     scorer=rff.token_sort_ratio, limit=15, score_cutoff=40)
+                                     scorer=rff.token_sort_ratio, limit=9823, score_cutoff=40)
                 seen_s: set = set()
                 for _, sc, ix in hits:
                     _, orig, sid = corp_s[ix]
@@ -326,8 +350,6 @@ with st.sidebar:
                     cr = cat_df[cat_df["ID number"] == sid]
                     ct = cr.iloc[0]["type"] if not cr.empty else "?"
                     rows_s.append({"ID": sid, "Название": orig[:60], "Тип": ct, "%": sc})
-                    if len(rows_s) == 10:
-                        break
             if rows_s:
                 st.dataframe(pd.DataFrame(rows_s), use_container_width=True, hide_index=True)
             else:
@@ -355,43 +377,20 @@ if page == "catalog":
         "Обязательные колонки: `ID number`, `Name RU`, `Name UZ`, `type`, `Name KR`."
     )
 
-    # ── Auto-load default catalog if it exists on disk ────────────────────────
-    DEFAULT_CATALOG = Path(__file__).parent / "services (3).xlsx"
-
-    def _load_and_set(file_source):
-        df_cat, err = load_catalog(file_source)
-        if err:
-            st.error(f"❌ {err}")
-            return False
-        st.session_state["catalog_df"] = df_cat
-        st.success(f"✅ {get_catalog_summary(df_cat)}")
-        for t, n in df_cat["type"].value_counts().items():
-            st.write(f"• {t}: **{n:,}**")
-        return True
-
-    if DEFAULT_CATALOG.exists():
-        st.info(f"📂 Найден файл каталога по умолчанию: `services (3).xlsx`")
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("✅ Использовать каталог по умолчанию",
-                         type="primary", key="btn_default_cat"):
-                with st.spinner("Загрузка каталога..."):
-                    if _load_and_set(str(DEFAULT_CATALOG)):
-                        _go("setup")
-        with col2:
-            st.caption("или загрузите другой файл ↓")
-
-    # ── Manual upload option ──────────────────────────────────────────────────
-    cat_file = st.file_uploader(
-        "Загрузить другой каталог (.xlsx)" if DEFAULT_CATALOG.exists()
-        else "Excel-файл каталога (.xlsx)",
-        type=["xlsx"], key="cat_up"
-    )
+    cat_file = st.file_uploader("Excel-файл каталога (.xlsx)",
+                                type=["xlsx"], key="cat_up")
     if cat_file:
         with st.spinner("Загрузка каталога..."):
-            if _load_and_set(cat_file):
-                st.button("➡️ Выбрать режим и тип входных данных",
-                          type="primary", on_click=_go, args=("setup",))
+            df_cat, err = load_catalog(cat_file)
+        if err:
+            st.error(f"❌ {err}")
+        else:
+            st.session_state["catalog_df"] = df_cat
+            st.success(f"✅ {get_catalog_summary(df_cat)}")
+            for t, n in df_cat["type"].value_counts().items():
+                st.write(f"• {t}: **{n:,}**")
+            st.button("➡️ Выбрать режим и тип входных данных",
+                      type="primary", on_click=_go, args=("setup",))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -817,71 +816,6 @@ elif page == "work":
             for r in matched
         ])
 
-        with st.expander("📊 Обзор всех строк", expanded=False):
-            def _hl(row):
-                sid   = str(row.get("ID", "-"))
-                score = int(row.get("Уверенность", 0) or 0)
-                if sid == "-":
-                    return ["background-color:#ffe0e0"] * len(row)
-                if score < 75:
-                    return ["background-color:#fffde0"] * len(row)
-                if score < 90:
-                    return ["background-color:#fff8e0"] * len(row)
-                return ["background-color:#e8f5e9"] * len(row)
-            st.dataframe(mdf.style.apply(_hl, axis=1),
-                         use_container_width=True, height=300)
-
-        # ── ID manual search ──────────────────────────────────────────────────
-        with st.expander("🔎 Найти ID по названию услуги", expanded=False):
-            ms_status = model_status()
-            if ms_status["loaded"]:
-                st.caption("🤖 Поиск через fine-tuned модель")
-                hq = st.text_input("Название", key="hq_rm")
-                if hq.strip() and len(hq.strip()) >= 3:
-                    from modules.matcher import _get_embedding_matcher
-                    em = _get_embedding_matcher()
-                    if em.loaded:
-                        candidates = em.search(hq.strip(), k=5)
-                        crows = []
-                        for c in candidates:
-                            if c["service_id"] in cat_df["ID number"].values:
-                                crows.append({
-                                    "ID":       c["service_id"],
-                                    "Название": (c["name_ru"] or c["name_uz"])[:55],
-                                    "Тип":      c["type"],
-                                    "%":        f"{c['score']:.1f}",
-                                })
-                        if crows:
-                            st.dataframe(pd.DataFrame(crows),
-                                         use_container_width=True, hide_index=True)
-                        else:
-                            st.info("Не найдено")
-            else:
-                st.caption("🔤 Поиск через fuzzy matching")
-                hq = st.text_input("Название", key="hq_rm")
-                if hq.strip() and len(hq.strip()) >= 3:
-                    corp2 = build_search_corpus(cat_df)
-                    tops  = rfp.extract(hq.lower(), [c[0] for c in corp2],
-                                        scorer=rff.token_sort_ratio,
-                                        limit=8, score_cutoff=35)
-                    seen2: set = set()
-                    crows = []
-                    for _, sc2, ix2 in tops:
-                        _, orig2, sid2 = corp2[ix2]
-                        if sid2 in seen2:
-                            continue
-                        seen2.add(sid2)
-                        cr2 = cat_df[cat_df["ID number"] == sid2]
-                        ct2 = cr2.iloc[0]["type"] if not cr2.empty else "?"
-                        crows.append({"ID": sid2, "Название": orig2[:55], "Тип": ct2, "%": sc2})
-                        if len(crows) == 6:
-                            break
-                    if crows:
-                        st.dataframe(pd.DataFrame(crows),
-                                     use_container_width=True, hide_index=True)
-                    else:
-                        st.info("Не найдено")
-
         # ── Editable table ────────────────────────────────────────────────────
         st.markdown("##### ✏️ Редактор строк")
         st.caption(
@@ -974,13 +908,6 @@ elif page == "work":
         m4.metric("С ID",          int((rdf["Услуга ID"] != "-").sum()))
         m5.metric("По запросу",    int((rdf["Цена"] == "По запросу").sum()))
 
-        # Preview
-        prev_cols = ["Услуга ID", "Клиника", "Филиал", "Имя RU",
-                     "Тип услуг", "Цена", "Категория RU"]
-        st.dataframe(rdf[prev_cols], use_container_width=True, height=280)
-        with st.expander("Все 22 колонки"):
-            st.dataframe(rdf, use_container_width=True, height=380)
-
         # Optional final edit
         st.markdown("##### ✏️ Финальное редактирование (необязательно)")
         edited_r = st.data_editor(
@@ -1008,15 +935,6 @@ elif page == "work":
             st.error(f"⚠️ Ошибок после редактирования: {len(re_errs)}")
             for e in re_errs[:5]:
                 st.error(e)
-
-        # Column check
-        with st.expander("🔍 Проверка структуры: 22 колонки"):
-            chk = pd.DataFrame({
-                "№": range(1, 23),
-                "Колонка": REQUIRED_COLUMNS,
-                "✓": ["✅" if c in edited_r.columns else "❌" for c in REQUIRED_COLUMNS],
-            })
-            st.dataframe(chk, use_container_width=True, hide_index=True)
 
         # Download
         xl_fname   = f"{_fname()}_ready.xlsx"
