@@ -25,7 +25,7 @@ from rapidfuzz import process as rfp, fuzz as rff
 
 from modules.catalog import load_catalog, get_catalog_summary, get_service_by_id
 from modules.extractor import extract_services_from_html
-from modules.matcher import build_search_corpus, match_service, ALLOWED_CATALOG_TYPES, model_status, confidence_label
+from modules.matcher import build_search_corpus, match_service, ALLOWED_CATALOG_TYPES, model_status, confidence_label, _get_embedding_matcher
 from modules.exporter import (
     build_ready_df, export_price_list_excel,
     export_matching_excel, export_ready_excel,
@@ -77,7 +77,6 @@ _DEFAULTS = {
     "ready_df":     None,
     "work_step":    "",          # review_price | match | review_match | done | error
     "work_error":   "",
-    "detected_cols": "",
 }
 for _k, _v in _DEFAULTS.items():
     if _k not in st.session_state:
@@ -104,12 +103,13 @@ def _fname() -> str:
 
 def _run_matching(services: list, catalog_df) -> list:
     """Pure Python fuzzy match — zero st.* calls."""
-    from rapidfuzz import fuzz as _rfuzz
+    from rapidfuzz import fuzz as _fuzz
+    from modules.exporter import _normalize_price
     corpus  = build_search_corpus(catalog_df)
     results = []
     for svc in services:
         nm       = clean_cell(svc.get("service_name", ""))
-        price    = svc.get("price", "По запросу")
+        price    = _normalize_price(svc.get("price", "По запросу"))
         svc_type = svc.get("type", "Диагностика")
         hit = match_service(nm, corpus, catalog_df)
         if hit["matched_id"] != "-":
@@ -122,16 +122,23 @@ def _run_matching(services: list, catalog_df) -> list:
                     hit.update({"matched_id": "-", "matched_name": "-",
                                 "comment": "Тип не допустим", "confidence": 0})
 
-        # Suspicious match detection: high score but names look very different
-        # "УЗИ простаты" matched to "УЗИ носа" at 94% is dangerous
+        # Build comment — include top-2 alternatives for unmatched/low confidence
         comment = hit["comment"]
-        if hit["matched_id"] != "-" and hit["matched_name"] not in ("-", ""):
-            name_sim = _rfuzz.token_sort_ratio(nm.lower(), hit["matched_name"].lower())
-            score    = hit["confidence"]
-            if name_sim < 35 and score >= 70:
-                comment = f"⚠️ ПРОВЕРИТЬ НАЗВАНИЕ! ({score}% / схожесть {name_sim}%)"
-            elif name_sim < 50 and score >= 85:
-                comment = f"⚠️ Имена отличаются ({score}% / схожесть {name_sim}%)"
+        top3    = hit.get("top3_candidates", [])
+        if hit["matched_id"] == "-" and top3:
+            alts = "; ".join(
+                f'{c["service_id"]} {c["name"][:25]} ({c["score"]}%)'
+                for c in top3[:2] if c["score"] >= 55
+            )
+            if alts:
+                comment = f'Не найдено | Варианты: {alts}'
+        elif hit["confidence"] < 75 and len(top3) > 1:
+            alts = "; ".join(
+                f'{c["service_id"]} ({c["score"]}%)'
+                for c in top3[1:3] if c["score"] >= 60
+            )
+            if alts:
+                comment = f'{hit["comment"]} | Альт: {alts}'
 
         results.append({
             "Название в MedPay":  hit["matched_name"],
@@ -141,17 +148,18 @@ def _run_matching(services: list, catalog_df) -> list:
             "Комментарий":        comment,
             "Цена":               price,
             "Тип услуг":          svc_type,
-            "top3":               hit.get("top3_candidates", []),
+            "top3":               top3,
             "method":             hit.get("method", ""),
         })
     return results
 
 
 def _make_ready(matched_rows: list, catalog_df) -> pd.DataFrame:
+    from modules.exporter import _normalize_price
     rows = []
     for r in matched_rows:
         r = dict(r)
-        r["Цена"] = clean_price(str(r.get("Цена", "")))
+        r["Цена"] = _normalize_price(str(r.get("Цена", "")))
         sid = str(r.get("ID", "")).strip()
         if sid not in ("-", "") and r.get("Название в MedPay") in ("-", ""):
             info = get_service_by_id(catalog_df, sid)
@@ -173,100 +181,63 @@ def _reset_clinic():
         st.session_state[k] = _DEFAULTS[k]
 
 
-# Latin Uzbek type values → standard Russian types
-_LATIN_TYPE_MAP = {
-    "tahlil":        "Анализы",
-    "tahlillar":     "Анализы",
-    "analiz":        "Анализы",
-    "analizlar":     "Анализы",
-    "laborator":     "Анализы",
-    "diagnostika":   "Диагностика",
-    "diagnoz":       "Диагностика",
-    "tekshiruv":     "Диагностика",
-    "анализы":       "Анализы",
-    "анализ":        "Анализы",
-    "диагностика":   "Диагностика",
-}
-
-
-def _normalize_latin_type(raw: str) -> str:
-    """Convert Latin Uzbek or Russian type values to standard Анализы/Диагностика."""
-    t = raw.strip().lower()
-    for key, val in _LATIN_TYPE_MAP.items():
-        if key in t:
-            return val
-    return None   # unknown — caller decides default
+def _transliterate_latin_to_russian(text: str) -> str:
+    """
+    Detect if service name is in Latin script (Uzbek Latin or English)
+    and transliterate to Russian for better matching.
+    Only applied when text is predominantly Latin.
+    """
+    if not text:
+        return text
+    latin_chars  = sum(1 for c in text if c.isascii() and c.isalpha())
+    cyrillic_chars = sum(1 for c in text if '\u0400' <= c <= '\u04FF')
+    # Only transliterate if mostly Latin (not mixed medical abbreviations)
+    if latin_chars == 0 or cyrillic_chars > latin_chars:
+        return text
+    # Use uz_latin_to_cyrillic from utils for Uzbek Latin → Cyrillic
+    from modules.utils import uz_latin_to_cyrillic
+    return uz_latin_to_cyrillic(text)
 
 
 def _parse_pricelist_xlsx(file_bytes: bytes) -> list:
-    """
-    Parse an uploaded price_list.xlsx into services list.
-    Supports both Russian and Latin Uzbek column names:
-      Russian: Название услуги, Цена, Тип
-      Latin:   usluga / xizmat / nomi, narx / narxi, turi / tahlil
-    """
+    """Parse an uploaded price_list.xlsx into services list."""
     df   = pd.read_excel(io.BytesIO(file_bytes), dtype=str)
     cols = df.columns.tolist()
-
-    # Detect name column — Russian AND Latin Uzbek column names
-    name_col = next((c for c in cols if any(
-        kw in c.lower() for kw in (
-            "назван", "услуг", "name", "service",
-            "usluga", "xizmat", "nomi", "nomi",
-            "хизмат", "номи",
-        )
+    name_col  = next((c for c in cols if any(
+        kw in c.lower() for kw in ("назван", "услуг", "name", "service", "xizmat", "nomi")
     )), cols[1] if len(cols) > 1 else cols[0])
-
-    # Detect price column
     price_col = next((c for c in cols if any(
-        kw in c.lower() for kw in (
-            "цена", "price", "стоим",
-            "narx", "narxi", "summa", "cost",
-        )
+        kw in c.lower() for kw in ("цена", "price", "стоим", "narx", "нарх")
     )), None)
-
-    # Detect type column
-    type_col = next((c for c in cols if any(
-        kw in c.lower() for kw in (
-            "тип", "type", "turi", "tahlil", "diagnostik",
-        )
+    type_col  = next((c for c in cols if any(
+        kw in c.lower() for kw in ("тип", "type", "tur")
     )), None)
-
-    # Show detected columns in UI for debugging
-    detected = f"Колонка услуг: `{name_col}`"
-    if price_col: detected += f" · Цена: `{price_col}`"
-    if type_col:  detected += f" · Тип: `{type_col}`"
-
     svcs = []
     for _, row in df.iterrows():
         nm = clean_cell(str(row.get(name_col, "")))
-        if not nm or nm.lower() in ("nan", "none", ""):
+        if not nm:
             continue
-
-        price = (clean_price(str(row.get(price_col, "")))
-                 if price_col else "По запросу")
-
-        # Determine type — try from column, then from service name keywords
-        stype = None
-        if type_col:
-            raw_type = clean_cell(str(row.get(type_col, "")))
-            stype = _normalize_latin_type(raw_type)
-
-        if stype is None:
-            # Classify from service name itself
-            from modules.extractor import classify_type
-            stype = classify_type(nm)
-
-        if stype not in ALLOWED_TYPES:
-            stype = "Диагностика"
-
-        svcs.append({"service_name": nm, "type": stype, "price": price})
-
-    return svcs, detected
+        # Transliterate Latin service names to Russian/Cyrillic for better matching
+        nm_for_matching = _transliterate_latin_to_russian(nm)
+        from modules.exporter import _normalize_price
+        price = (_normalize_price(clean_price(str(row.get(price_col, ""))))
+                 if price_col else "9999999")
+        stype = (clean_cell(str(row.get(type_col, "Диагностика")))
+                 if type_col else "Диагностика")
+        # Keep original type — non-standard types are shown as warning to user
+        # and excluded from ready file in exporter. Don't silently convert here.
+        svcs.append({
+            "service_name":          nm_for_matching,  # transliterated for matching
+            "service_name_original": nm,               # original for display
+            "type":                  stype,
+            "price":                 price,
+        })
+    return svcs
 
 
 def _parse_matching_xlsx(file_bytes: bytes) -> list:
     """Parse an uploaded matching.xlsx into matched rows list."""
+    from modules.exporter import _normalize_price
     df  = pd.read_excel(io.BytesIO(file_bytes), dtype=str)
     req = {"ID", "Цена", "Тип услуг"}
     missing = req - set(df.columns)
@@ -274,7 +245,7 @@ def _parse_matching_xlsx(file_bytes: bytes) -> list:
         raise ValueError(f"Отсутствуют колонки: {', '.join(missing)}")
     rows = df.to_dict("records")
     for r in rows:
-        r["Цена"] = clean_price(str(r.get("Цена", "")))
+        r["Цена"] = _normalize_price(str(r.get("Цена", "")))
         if "Название в MedPay"  not in r: r["Название в MedPay"]  = "-"
         if "Название в клинике" not in r: r["Название в клинике"] = ""
         if "Уверенность"        not in r: r["Уверенность"]        = 0
@@ -339,34 +310,39 @@ with st.sidebar:
 
         st.divider()
 
-        # Catalog name search
+        # Catalog name search — uses AI model if loaded, fuzzy fallback otherwise
         st.markdown("**Поиск кандидатов:**")
         sq = st.text_input("Название", placeholder="МРТ головного мозга",
                            key="sb_sq", label_visibility="collapsed")
         if sq.strip() and len(sq.strip()) >= 2:
-            from modules.matcher import _get_embedding_matcher
             em = _get_embedding_matcher()
             rows_s = []
-            seen_s: set = set()
             if em.loaded:
-                # Use fine-tuned model — show top 20
-                candidates = em.search(sq.strip(), k=20)
+                # Use E5 model — show all results above 50% similarity
+                candidates = em.search(sq.strip(), k=9823)
+                seen_s: set = set()
                 for c in candidates:
+                    if c["score"] < 50:
+                        break  # Results are sorted by score, stop when too low
                     sid = c["service_id"]
                     if sid in seen_s:
                         continue
                     seen_s.add(sid)
+                    cr = cat_df[cat_df["ID number"] == sid]
+                    ct = cr.iloc[0]["type"] if not cr.empty else "?"
+                    name = c["name_ru"] or c["name_uz"]
                     rows_s.append({
-                        "ID":       sid,
-                        "Название": (c["name_ru"] or c["name_uz"])[:55],
-                        "Тип":      c["type"],
-                        "%":        f'{c["score"]:.1f}',
+                        "ID": sid,
+                        "Название": name[:60],
+                        "Тип": ct,
+                        "%": c["score"],
                     })
             else:
-                # Fuzzy fallback — show top 20
+                # Fuzzy fallback — show all results above 40%
                 corp_s = build_search_corpus(cat_df)
                 hits   = rfp.extract(sq.lower(), [c[0] for c in corp_s],
-                                     scorer=rff.token_sort_ratio, limit=30, score_cutoff=35)
+                                     scorer=rff.token_sort_ratio, limit=9823, score_cutoff=40)
+                seen_s: set = set()
                 for _, sc, ix in hits:
                     _, orig, sid = corp_s[ix]
                     if sid in seen_s:
@@ -374,13 +350,9 @@ with st.sidebar:
                     seen_s.add(sid)
                     cr = cat_df[cat_df["ID number"] == sid]
                     ct = cr.iloc[0]["type"] if not cr.empty else "?"
-                    rows_s.append({"ID": sid, "Название": orig[:55], "Тип": ct, "%": sc})
-                    if len(rows_s) == 20:
-                        break
+                    rows_s.append({"ID": sid, "Название": orig[:60], "Тип": ct, "%": sc})
             if rows_s:
-                st.caption(f"{len(rows_s)} результатов")
-                st.dataframe(pd.DataFrame(rows_s), use_container_width=True,
-                             hide_index=True, height=min(400, len(rows_s)*38+40))
+                st.dataframe(pd.DataFrame(rows_s), use_container_width=True, hide_index=True)
             else:
                 st.info("Не найдено")
     else:
@@ -407,7 +379,7 @@ if page == "catalog":
     )
 
     # ── Auto-load default catalog if it exists on disk ────────────────────────
-    DEFAULT_CATALOG = Path(__file__).parent / "services (3).xlsx"
+    DEFAULT_CATALOG = Path(__file__).parent / "services_3.xlsx"
 
     def _load_and_set(file_source):
         df_cat, err = load_catalog(file_source)
@@ -421,7 +393,7 @@ if page == "catalog":
         return True
 
     if DEFAULT_CATALOG.exists():
-        st.info(f"📂 Найден файл каталога по умолчанию: `services (3).xlsx`")
+        st.info(f"📂 Найден файл каталога по умолчанию: `services_3.xlsx`")
         col1, col2 = st.columns(2)
         with col1:
             if st.button("✅ Использовать каталог по умолчанию",
@@ -568,13 +540,12 @@ elif page == "setup":
             # ── Entry B ───────────────────────────────────────────────────────
             elif entry == "B":
                 try:
-                    svcs, _detected_cols = _parse_pricelist_xlsx(fbytes)
+                    svcs = _parse_pricelist_xlsx(fbytes)
                     st.session_state["clinic_name"] = (
                         cn_ov or uploaded.name.replace(".xlsx", "").split("_")[0]
                     )
                     st.session_state["district"]  = di_ov or ""
-                    st.session_state["services"]      = svcs
-                    st.session_state["detected_cols"] = _detected_cols
+                    st.session_state["services"]  = svcs
                     if not svcs:
                         st.session_state["work_step"]  = "error"
                         st.session_state["work_error"] = "Услуги не найдены в прайс-листе."
@@ -671,15 +642,33 @@ elif page == "work":
         svcs = st.session_state["services"]
         n_ana = sum(1 for s in svcs if s["type"] == "Анализы")
         n_dia = sum(1 for s in svcs if s["type"] == "Диагностика")
+        n_other = len(svcs) - n_ana - n_dia
 
         st.markdown(f"### 📋 Прайс-лист · {clinic_nm} / {district}")
         st.caption(
             f"**{len(svcs)}** услуг (Анализы: {n_ana}, Диагностика: {n_dia}). "
             "Проверьте, отредактируйте при необходимости, затем нажмите «Далее»."
         )
-        # Show info if file had Latin column names
-        if st.session_state.get("detected_cols"):
-            st.info(f"📋 Определены колонки: {st.session_state['detected_cols']}")
+
+        # ── Warning: non-standard service types ──────────────────────────────
+        other_svcs = [s for s in svcs if s["type"] not in ("Анализы", "Диагностика")]
+        if other_svcs:
+            with st.expander(
+                f"⚠️ Найдено {len(other_svcs)} услуг с нестандартным типом — нажмите чтобы посмотреть",
+                expanded=True
+            ):
+                st.warning(
+                    "Следующие услуги имеют тип, отличный от «Анализы» и «Диагностика» "
+                    "(например: Врачебные услуги, Лечебные процедуры, Консультации и т.д.). "
+                    "Они **не будут включены** в итоговый файл. "
+                    "Вы можете изменить тип вручную в таблице ниже."
+                )
+                other_df = pd.DataFrame([
+                    {"#": i+1, "Название услуги": s["service_name"],
+                     "Тип (определён как)": s["type"], "Цена": s["price"]}
+                    for i, s in enumerate(other_svcs)
+                ])
+                st.dataframe(other_df, use_container_width=True, hide_index=True)
 
         price_df = pd.DataFrame([
             {"#": i+1, "Название услуги": s["service_name"],
@@ -844,11 +833,13 @@ elif page == "work":
                         st.caption("Кандидаты не найдены — введите ID вручную")
                     st.divider()
 
-        # ── Editable table ────────────────────────────────────────────────────
+        # ── Coloured overview table ───────────────────────────────────────────
         mdf = pd.DataFrame([
             {k: v for k, v in r.items() if k != "top3" and k != "method"}
             for r in matched
         ])
+
+        # ── Editable table ────────────────────────────────────────────────────
         st.markdown("##### ✏️ Редактор строк")
         st.caption(
             "🟢 ≥90% · 🟡 75-89% · 🔴 <75% · ⬜ не найдено. "
