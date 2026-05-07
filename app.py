@@ -123,8 +123,6 @@ def _run_matching(services: list, catalog_df) -> list:
                                 "comment": "Тип не допустим", "confidence": 0})
 
         # Build comment — include top-2 alternatives for unmatched/low confidence
-# Build comment with top-2 alternatives for low confidence matches
-        
         comment = hit["comment"]
         top3    = hit.get("top3_candidates", [])
         if hit["matched_id"] == "-" and top3:
@@ -201,6 +199,38 @@ def _transliterate_latin_to_russian(text: str) -> str:
     return uz_latin_to_cyrillic(text)
 
 
+def normalize_service_type(raw: str) -> str:
+    """
+    Convert any variant of service type to standard Russian values.
+    Handles: Analysis, Diagnostics, Diagnostic, Analyze, Анализ,
+             1.Analysis, 2.Diagnostics, tahlil, diagnostika etc.
+    Returns: "Анализы" or "Диагностика"
+    """
+    if not raw:
+        return "Диагностика"
+    t = raw.lower().strip()
+    # Strip leading numbers/dots like "1.", "2.", "1) " etc.
+    t = re.sub(r'^[\d\s\.\)\-]+', '', t).strip()
+
+    ANALYSIS_VARIANTS = {
+        "анализы", "анализ", "analysis", "analyses", "analyze",
+        "analyzes", "tahlil", "tahlillar", "таҳлил", "таҳлиллар",
+        "лаборатор", "lab", "лаб",
+    }
+    DIAGNOSTICS_VARIANTS = {
+        "диагностика", "диагностик", "diagnostics", "diagnostic",
+        "diagnostika", "diagnoz", "diagnosis", "диагноз",
+        "imaging", "визуализация", "инструментальн",
+    }
+    for v in ANALYSIS_VARIANTS:
+        if v in t:
+            return "Анализы"
+    for v in DIAGNOSTICS_VARIANTS:
+        if v in t:
+            return "Диагностика"
+    return "Диагностика"
+
+
 def _parse_pricelist_xlsx(file_bytes: bytes) -> list:
     """Parse an uploaded price_list.xlsx into services list."""
     df   = pd.read_excel(io.BytesIO(file_bytes), dtype=str)
@@ -224,13 +254,12 @@ def _parse_pricelist_xlsx(file_bytes: bytes) -> list:
         from modules.exporter import _normalize_price
         price = (_normalize_price(clean_price(str(row.get(price_col, ""))))
                  if price_col else "9999999")
-        stype = (clean_cell(str(row.get(type_col, "Диагностика")))
-                 if type_col else "Диагностика")
-        # Keep original type — non-standard types are shown as warning to user
-        # and excluded from ready file in exporter. Don't silently convert here.
+        stype = normalize_service_type(
+            clean_cell(str(row.get(type_col, ""))) if type_col else ""
+        )
         svcs.append({
-            "service_name":          nm_for_matching,  # transliterated for matching
-            "service_name_original": nm,               # original for display
+            "service_name":          nm_for_matching,
+            "service_name_original": nm,
             "type":                  stype,
             "price":                 price,
         })
@@ -711,7 +740,7 @@ elif page == "work":
             if st.button("➡️ К матчингу", type="primary", key="btn_to_match"):
                 st.session_state["services"] = [
                     {"service_name": clean_cell(str(r.get("Название услуги", ""))),
-                     "type":  clean_cell(str(r.get("Тип", "Диагностика"))),
+                     "type":  normalize_service_type(clean_cell(str(r.get("Тип", "")))),
                      "price": clean_price(str(r.get("Цена", "")))}
                     for _, r in edited_p.iterrows()
                     if clean_cell(str(r.get("Название услуги", "")))
