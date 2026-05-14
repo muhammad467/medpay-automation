@@ -14,10 +14,13 @@ def _detect_material(name_ru: str) -> str:
                                       "эстрадиол", "прогестерон", "билирубин", "лейкоцит",
                                       "эритроцит", "тромбоцит", "гемоглобин"]):
         return "blood"
-    if any(k in name_lower for k in ["моча", "мочевин", "мочевой", "урин"]):
+    if any(k in name_lower for k in ["моча", "мочи", "мочу", "мочой", "мочевин", "мочевой", "урин",
+                                      "анализ мочи", "исследование мочи", "проба мочи",
+                                      "цитология мочи", "посев мочи"]):
         return "urine"
-    if any(k in name_lower for k in ["кал", "копрограмм", "кал на", "исследование кала",
-                                      "яйца глист", "простейши"]):
+    if any(k in name_lower for k in ["кал", "кале", "кала", "калу", "копрограмм",
+                                      "исследование кала", "яйца глист", "простейши",
+                                      "гельминт", "дисбакт", "дисбиоз кишечника"]):
         return "stool"
     if any(k in name_lower for k in ["мазок", "соскоб", "выделения", "секрет"]):
         return "smear"
@@ -80,19 +83,22 @@ def _analysis_templates(name_ru: str, name_uz: str, name_kr: str) -> dict:
         f"показатель организма. Результат используется врачом для диагностики, контроля "
         f"состояния пациента или оценки эффективности лечения."
     )
+    # Guard against broken catalog entries where Name UZ starts with lowercase (missing first letter)
+    _uz_valid = name_uz and name_uz != "-" and len(name_uz) > 0 and (name_uz[0].isupper() or name_uz[0].isdigit())
     desc_uz = (
         f"{name_uz} — organizmdagi tegishli ko'rsatkichni baholashga yordam beradigan laborator "
         f"tahlil. Natija shifokor tomonidan tashxis qo'yish, bemor holatini nazorat qilish yoki "
         f"davolash samaradorligini baholashda ishlatiladi."
-    ) if name_uz and name_uz != "-" else (
+    ) if _uz_valid else (
         f"Ushbu laborator tahlil organizmdagi tegishli ko'rsatkichni baholashga yordam beradi. "
         f"Natija shifokor tomonidan tashxis qo'yish va davolashda ishlatiladi."
     )
+    _kr_valid = name_kr and name_kr != "-" and len(name_kr) > 0 and (name_kr[0].isupper() or name_kr[0].isdigit())
     desc_kr = (
         f"{name_kr} — организмдаги тегишли кўрсаткични баҳолашга ёрдам берадиган лаборатор "
         f"таҳлил. Натижа шифокор томонидан ташхис қўйиш, бемор ҳолатини назорат қилиш ёки "
         f"даволаш самарадорлигини баҳолашда ишлатилади."
-    ) if name_kr and name_kr != "-" else (
+    ) if _kr_valid else (
         f"Ушбу лаборатор таҳлил организмдаги тегишли кўрсаткични баҳолашга ёрдам беради."
     )
 
