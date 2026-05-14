@@ -64,18 +64,17 @@ st.set_page_config(
 
 # ── Session state defaults ────────────────────────────────────────────────────
 _DEFAULTS = {
-    "page":         "catalog",   # catalog | setup | work
+    "page":         "catalog",
     "catalog_df":   None,
-    # Current clinic job
     "mode":         "manual",
     "entry":        "A",
     "clinic_name":  "",
     "district":     "",
-    "services":     [],          # extracted price list
-    "matched":      [],          # matching rows
+    "services":     [],
+    "matched":      [],
     "match_summary": (0, 0, 0),
     "ready_df":     None,
-    "work_step":    "",          # review_price | match | review_match | done | error
+    "work_step":    "",
     "work_error":   "",
 }
 for _k, _v in _DEFAULTS.items():
@@ -101,6 +100,44 @@ def _fname() -> str:
     return f"{cn}_{di}" if di else cn
 
 
+def normalize_service_type(raw: str) -> str:
+    """
+    Convert any variant of service type to standard Russian values.
+    Handles: Analysis, Diagnostics, tahlil, diagnostika,
+             1.Analysis, 2.Diagnostics, allergen codes (F25), (e1) etc.
+    Returns: "Анализы" or "Диагностика"
+    """
+    if not raw:
+        return "Диагностика"
+    t = raw.lower().strip()
+
+    # Allergen codes pattern: (F25), (e1), (g4), (d1), (w8), (m2), (i1), (*k80) etc.
+    # These are always Анализы (specific IgE tests)
+    if re.match(r'^\(\*?[a-zA-Z\d]', t):
+        return "Анализы"
+
+    # Strip leading numbers/dots like "1.", "2.", "1) " etc.
+    t = re.sub(r'^[\d\s\.\)\-]+', '', t).strip()
+
+    ANALYSIS_VARIANTS = {
+        "анализы", "анализ", "analysis", "analyses", "analyze",
+        "analyzes", "tahlil", "tahlillar", "таҳлил", "таҳлиллар",
+        "лаборатор", "lab", "лаб",
+    }
+    DIAGNOSTICS_VARIANTS = {
+        "диагностика", "диагностик", "diagnostics", "diagnostic",
+        "diagnostika", "diagnoz", "diagnosis", "диагноз",
+        "imaging", "визуализация", "инструментальн",
+    }
+    for v in ANALYSIS_VARIANTS:
+        if v in t:
+            return "Анализы"
+    for v in DIAGNOSTICS_VARIANTS:
+        if v in t:
+            return "Диагностика"
+    return "Диагностика"
+
+
 def _run_matching(services: list, catalog_df) -> list:
     """Pure Python fuzzy match — zero st.* calls."""
     from rapidfuzz import fuzz as _fuzz
@@ -122,7 +159,6 @@ def _run_matching(services: list, catalog_df) -> list:
                     hit.update({"matched_id": "-", "matched_name": "-",
                                 "comment": "Тип не допустим", "confidence": 0})
 
-        # Build comment — include top-2 alternatives for unmatched/low confidence
         comment = hit["comment"]
         top3    = hit.get("top3_candidates", [])
         if hit["matched_id"] == "-" and top3:
@@ -183,52 +219,17 @@ def _reset_clinic():
 
 def _transliterate_latin_to_russian(text: str) -> str:
     """
-    Detect if service name is in Latin script (Uzbek Latin or English)
-    and transliterate to Russian for better matching.
+    Detect if service name is in Latin script and transliterate to Cyrillic.
     Only applied when text is predominantly Latin.
     """
     if not text:
         return text
-    latin_chars  = sum(1 for c in text if c.isascii() and c.isalpha())
+    latin_chars    = sum(1 for c in text if c.isascii() and c.isalpha())
     cyrillic_chars = sum(1 for c in text if '\u0400' <= c <= '\u04FF')
-    # Only transliterate if mostly Latin (not mixed medical abbreviations)
     if latin_chars == 0 or cyrillic_chars > latin_chars:
         return text
-    # Use uz_latin_to_cyrillic from utils for Uzbek Latin → Cyrillic
     from modules.utils import uz_latin_to_cyrillic
     return uz_latin_to_cyrillic(text)
-
-
-def normalize_service_type(raw: str) -> str:
-    """
-    Convert any variant of service type to standard Russian values.
-    Handles: Analysis, Diagnostics, Diagnostic, Analyze, Анализ,
-             1.Analysis, 2.Diagnostics, tahlil, diagnostika etc.
-    Returns: "Анализы" or "Диагностика"
-    """
-    if not raw:
-        return "Диагностика"
-    t = raw.lower().strip()
-    # Strip leading numbers/dots like "1.", "2.", "1) " etc.
-    t = re.sub(r'^[\d\s\.\)\-]+', '', t).strip()
-
-    ANALYSIS_VARIANTS = {
-        "анализы", "анализ", "analysis", "analyses", "analyze",
-        "analyzes", "tahlil", "tahlillar", "таҳлил", "таҳлиллар",
-        "лаборатор", "lab", "лаб",
-    }
-    DIAGNOSTICS_VARIANTS = {
-        "диагностика", "диагностик", "diagnostics", "diagnostic",
-        "diagnostika", "diagnoz", "diagnosis", "диагноз",
-        "imaging", "визуализация", "инструментальн",
-    }
-    for v in ANALYSIS_VARIANTS:
-        if v in t:
-            return "Анализы"
-    for v in DIAGNOSTICS_VARIANTS:
-        if v in t:
-            return "Диагностика"
-    return "Диагностика"
 
 
 def _parse_pricelist_xlsx(file_bytes: bytes) -> list:
@@ -249,11 +250,11 @@ def _parse_pricelist_xlsx(file_bytes: bytes) -> list:
         nm = clean_cell(str(row.get(name_col, "")))
         if not nm:
             continue
-        # Transliterate Latin service names to Russian/Cyrillic for better matching
         nm_for_matching = _transliterate_latin_to_russian(nm)
         from modules.exporter import _normalize_price
         price = (_normalize_price(clean_price(str(row.get(price_col, ""))))
                  if price_col else "9999999")
+        # Normalize type — handles Analysis, Diagnostics, 1.Analysis, tahlil etc.
         stype = normalize_service_type(
             clean_cell(str(row.get(type_col, ""))) if type_col else ""
         )
@@ -312,7 +313,6 @@ with st.sidebar:
 
         st.divider()
 
-        # Navigation shortcuts
         page_now = st.session_state["page"]
         if page_now != "setup":
             if st.button("＋ Новая клиника", key="sb_new_clinic"):
@@ -324,7 +324,6 @@ with st.sidebar:
 
         st.divider()
 
-        # Catalog ID lookup
         st.markdown("**Поиск по ID:**")
         lid = st.text_input("ID", placeholder="700009", key="sb_id",
                             label_visibility="collapsed")
@@ -341,7 +340,6 @@ with st.sidebar:
 
         st.divider()
 
-        # Catalog name search — uses AI model if loaded, fuzzy fallback otherwise
         st.markdown("**Поиск кандидатов:**")
         sq = st.text_input("Название", placeholder="МРТ головного мозга",
                            key="sb_sq", label_visibility="collapsed")
@@ -349,12 +347,11 @@ with st.sidebar:
             em = _get_embedding_matcher()
             rows_s = []
             if em.loaded:
-                # Use E5 model — show all results above 50% similarity
                 candidates = em.search(sq.strip(), k=9823)
                 seen_s: set = set()
                 for c in candidates:
                     if c["score"] < 50:
-                        break  # Results are sorted by score, stop when too low
+                        break
                     sid = c["service_id"]
                     if sid in seen_s:
                         continue
@@ -369,7 +366,6 @@ with st.sidebar:
                         "%": c["score"],
                     })
             else:
-                # Fuzzy fallback — show all results above 40%
                 corp_s = build_search_corpus(cat_df)
                 hits   = rfp.extract(sq.lower(), [c[0] for c in corp_s],
                                      scorer=rff.token_sort_ratio, limit=9823, score_cutoff=40)
@@ -409,7 +405,6 @@ if page == "catalog":
         "Обязательные колонки: `ID number`, `Name RU`, `Name UZ`, `type`, `Name KR`."
     )
 
-    # ── Auto-load default catalog if it exists on disk ────────────────────────
     DEFAULT_CATALOG = Path(__file__).parent / "services (3).xlsx"
 
     def _load_and_set(file_source):
@@ -435,7 +430,6 @@ if page == "catalog":
         with col2:
             st.caption("или загрузите другой файл ↓")
 
-    # ── Manual upload option ──────────────────────────────────────────────────
     cat_file = st.file_uploader(
         "Загрузить другой каталог (.xlsx)" if DEFAULT_CATALOG.exists()
         else "Excel-файл каталога (.xlsx)",
@@ -447,8 +441,9 @@ if page == "catalog":
                 st.button("➡️ Выбрать режим и тип входных данных",
                           type="primary", on_click=_go, args=("setup",))
 
+
 # ─────────────────────────────────────────────────────────────────────────────
-# PAGE: SETUP — choose mode + entry, upload file, set clinic name
+# PAGE: SETUP
 # ─────────────────────────────────────────────────────────────────────────────
 elif page == "setup":
     if st.session_state["catalog_df"] is None:
@@ -458,7 +453,6 @@ elif page == "setup":
     else:
         st.header("Шаг 2 — Настройка")
 
-        # ── 1. Mode ──────────────────────────────────────────────────────────
         st.markdown("### 1 · Режим")
         m_col, m_info = st.columns([1, 2])
         with m_col:
@@ -483,7 +477,6 @@ elif page == "setup":
 
         st.divider()
 
-        # ── 2. Entry point ────────────────────────────────────────────────────
         st.markdown("### 2 · Входные данные")
         entry_opts = ["A", "B", "C"] if mode == "manual" else ["A", "B", "C", "D"]
         e_col, e_info = st.columns([1, 2])
@@ -498,7 +491,6 @@ elif page == "setup":
 
         st.divider()
 
-        # ── 3. File upload ────────────────────────────────────────────────────
         st.markdown("### 3 · Файл клиники")
         if entry in ("A", "D"):
             ft, fl = ["html", "htm"], "HTML-страница прайс-листа (.html)"
@@ -509,7 +501,6 @@ elif page == "setup":
 
         uploaded = st.file_uploader(fl, type=ft, key="clinic_file")
 
-        # Clinic name / district override
         if uploaded:
             ov_c1, ov_c2 = st.columns(2)
             cn_ov = ov_c1.text_input(
@@ -533,7 +524,6 @@ elif page == "setup":
             st.session_state["mode"]  = mode
             st.session_state["entry"] = entry
 
-            # ── Entry A / D ───────────────────────────────────────────────────
             if entry in ("A", "D"):
                 try:
                     with st.spinner("Извлечение услуг из HTML..."):
@@ -550,7 +540,6 @@ elif page == "setup":
                             "Проверьте, что страница содержит прайс-лист."
                         )
                     elif mode == "auto" or entry == "D":
-                        # Auto: run matching immediately
                         with st.spinner(f"Матчинг {len(svcs)} услуг (~30–60 с)..."):
                             matched = _run_matching(svcs, cat_df)
                         n_ok  = sum(1 for r in matched if r["ID"] != "-")
@@ -568,7 +557,6 @@ elif page == "setup":
                     st.session_state["work_step"]  = "error"
                     st.session_state["work_error"] = f"Ошибка парсинга HTML: {ex}"
 
-            # ── Entry B ───────────────────────────────────────────────────────
             elif entry == "B":
                 try:
                     svcs = _parse_pricelist_xlsx(fbytes)
@@ -598,7 +586,6 @@ elif page == "setup":
                     st.session_state["work_step"]  = "error"
                     st.session_state["work_error"] = f"Ошибка чтения прайс-листа: {ex}"
 
-            # ── Entry C ───────────────────────────────────────────────────────
             elif entry == "C":
                 try:
                     matched = _parse_matching_xlsx(fbytes)
@@ -620,7 +607,7 @@ elif page == "setup":
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PAGE: WORK — all sub-steps rendered here
+# PAGE: WORK
 # ─────────────────────────────────────────────────────────────────────────────
 elif page == "work":
     cat_df     = st.session_state["catalog_df"]
@@ -629,7 +616,6 @@ elif page == "work":
     clinic_nm  = st.session_state["clinic_name"]
     district   = st.session_state["district"]
 
-    # ── Progress indicator ────────────────────────────────────────────────────
     entry = st.session_state["entry"]
     STEPS_FOR_ENTRY = {
         "A": ["review_price", "match", "review_match", "done"],
@@ -671,8 +657,8 @@ elif page == "work":
     # ── Sub-step: review_price ────────────────────────────────────────────────
     elif work_step == "review_price":
         svcs = st.session_state["services"]
-        n_ana = sum(1 for s in svcs if s["type"] == "Анализы")
-        n_dia = sum(1 for s in svcs if s["type"] == "Диагностика")
+        n_ana   = sum(1 for s in svcs if s["type"] == "Анализы")
+        n_dia   = sum(1 for s in svcs if s["type"] == "Диагностика")
         n_other = len(svcs) - n_ana - n_dia
 
         st.markdown(f"### 📋 Прайс-лист · {clinic_nm} / {district}")
@@ -681,7 +667,6 @@ elif page == "work":
             "Проверьте, отредактируйте при необходимости, затем нажмите «Далее»."
         )
 
-        # ── Warning: non-standard service types ──────────────────────────────
         other_svcs = [s for s in svcs if s["type"] not in ("Анализы", "Диагностика")]
         if other_svcs:
             with st.expander(
@@ -789,14 +774,12 @@ elif page == "work":
         st.markdown(f"### ✏️ Проверка матчинга · {clinic_nm} / {district}")
 
         mc1, mc2, mc3, mc4, mc5 = st.columns(5)
-        mc1.metric("Всего",              len(matched))
-        mc2.metric("✅ Высокая (≥90%)",  sum(1 for r in matched if int(r.get("Уверенность",0) or 0) >= 90))
+        mc1.metric("Всего",               len(matched))
+        mc2.metric("✅ Высокая (≥90%)",   sum(1 for r in matched if int(r.get("Уверенность",0) or 0) >= 90))
         mc3.metric("🟡 Хорошая (75-89%)", sum(1 for r in matched if 75 <= int(r.get("Уверенность",0) or 0) < 90))
         mc4.metric("🔴 Проверить (<75%)", sum(1 for r in matched if 0 < int(r.get("Уверенность",0) or 0) < 75))
-        mc5.metric("⬜ Не найдено",       sum(1 for r in matched if str(r.get("ID","-")) == "-"))
+        mc5.metric("⬜ Не найдено",        sum(1 for r in matched if str(r.get("ID","-")) == "-"))
 
-        # ── Colour-coded row review with top-3 candidates ─────────────────────
-        # Group rows by confidence for easier review
         needs_review = [r for r in matched if int(r.get("Уверенность", 0) or 0) < 75
                         and str(r.get("ID", "-")) != "-"]
         not_found    = [r for r in matched if str(r.get("ID", "-")) == "-"]
@@ -808,7 +791,6 @@ elif page == "work":
                 "Проверьте их ниже перед генерацией."
             )
 
-        # ── Top-3 candidates panel for low-confidence and not-found rows ──────
         rows_to_review = not_found + needs_review
         if rows_to_review:
             with st.expander(
@@ -839,17 +821,13 @@ elif page == "work":
                         cand_cols = st.columns(len(top3))
                         for ci, cand in enumerate(top3):
                             with cand_cols[ci]:
-                                cname = cand.get("name", "")[:50]
+                                cname  = cand.get("name", "")[:50]
                                 cscore = cand.get("score", 0)
                                 csid   = cand.get("service_id", "")
                                 ctype  = cand.get("type", "")
                                 st.caption(f"**{cscore:.0f}%** · `{csid}` · {ctype}")
                                 st.caption(cname)
-                                if st.button(
-                                    "Применить",
-                                    key=f"pick_{ridx}_{ci}",
-                                ):
-                                    # Apply this candidate to the matched row
+                                if st.button("Применить", key=f"pick_{ridx}_{ci}"):
                                     clinic_nm_svc = row.get("Название в клинике","")
                                     for mr in matched:
                                         if mr.get("Название в клинике","") == clinic_nm_svc:
@@ -864,13 +842,11 @@ elif page == "work":
                         st.caption("Кандидаты не найдены — введите ID вручную")
                     st.divider()
 
-        # ── Coloured overview table ───────────────────────────────────────────
         mdf = pd.DataFrame([
             {k: v for k, v in r.items() if k != "top3" and k != "method"}
             for r in matched
         ])
 
-        # ── Editable table ────────────────────────────────────────────────────
         st.markdown("##### ✏️ Редактор строк")
         st.caption(
             "🟢 ≥90% · 🟡 75-89% · 🔴 <75% · ⬜ не найдено. "
@@ -893,7 +869,6 @@ elif page == "work":
             key="match_editor",
         )
 
-        # Validate edited rows
         val_errs = []
         for idx, row in edited_m.iterrows():
             rd = row.to_dict()
@@ -901,7 +876,6 @@ elif page == "work":
             for e in validate_matching_row(rd, cat_df):
                 val_errs.append(f"Строка {idx+1}: {e}")
 
-        # Action bar
         ab1, ab2, ab3 = st.columns([2, 1, 1])
         with ab1:
             if val_errs:
@@ -954,15 +928,13 @@ elif page == "work":
                 f"Типы: {', '.join(sorted(rdf['Тип услуг'].unique()))}"
             )
 
-        # Metrics
         m1, m2, m3, m4, m5 = st.columns(5)
-        m1.metric("Строк",         len(rdf))
-        m2.metric("Диагностика",   int((rdf["Тип услуг"] == "Диагностика").sum()))
-        m3.metric("Анализы",       int((rdf["Тип услуг"] == "Анализы").sum()))
-        m4.metric("С ID",          int((rdf["Услуга ID"] != "-").sum()))
-        m5.metric("По запросу",    int((rdf["Цена"] == "По запросу").sum()))
+        m1.metric("Строк",       len(rdf))
+        m2.metric("Диагностика", int((rdf["Тип услуг"] == "Диагностика").sum()))
+        m3.metric("Анализы",     int((rdf["Тип услуг"] == "Анализы").sum()))
+        m4.metric("С ID",        int((rdf["Услуга ID"] != "-").sum()))
+        m5.metric("По запросу",  int((rdf["Цена"] == "По запросу").sum()))
 
-        # Optional final edit
         st.markdown("##### ✏️ Финальное редактирование (необязательно)")
         edited_r = st.data_editor(
             rdf, use_container_width=True, num_rows="dynamic",
@@ -990,7 +962,6 @@ elif page == "work":
             for e in re_errs[:5]:
                 st.error(e)
 
-        # Download
         xl_fname   = f"{_fname()}_ready.xlsx"
         sheet_name = f"{_fname()}_ready"[:31]
         if not re_errs:
@@ -1034,8 +1005,8 @@ elif page == "work":
 
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.divider()
-ws_label = st.session_state.get("work_step", "")
-mode_lbl = "⚡ Авто" if st.session_state.get("mode") == "auto" else "🖐 Ручной"
+ws_label  = st.session_state.get("work_step", "")
+mode_lbl  = "⚡ Авто" if st.session_state.get("mode") == "auto" else "🖐 Ручной"
 entry_lbl = st.session_state.get("entry", "")
 st.caption(
     f"MedPay Automation v3.1 · {mode_lbl}"
