@@ -1,21 +1,19 @@
 """
-matcher.py — Cascade matching engine v2.1
+matcher.py — Cascade matching engine v2.0
 
 Priority:
   1. Fine-tuned sentence-transformers model + FAISS  (primary)
   2. RapidFuzz fuzzy matching                        (fallback if model not loaded)
 
-Confidence labels:
+Confidence labels (always assigned, ID always returned):
   ≥ 90%  → "Высокая уверенность"       — safe to use, still verify name
   75–89% → "Хорошее совпадение"         — spot-check recommended
-  70–74% → "Проверить вручную"          — show to human, likely correct
-  < 70%  → no ID assigned               — human must search manually
+  60–74% → "Проверить вручную"          — show to human, likely correct
+  < 60%  → "Требует проверки"           — show to human, may be wrong
 
-Key rule: ID is assigned ONLY if confidence >= 70%.
-          Below 70% → no ID, no name assigned, human must search manually.
-
-Model: intfloat/multilingual-e5-base (fine-tuned)
-       Requires "query: " prefix for queries, "passage: " prefix for catalog.
+Key rule: ID is ALWAYS assigned if a match is found (even at 30%).
+          Human always sees the matched name and decides.
+          The comment field tells them how confident to be.
 
 top3_candidates: always returned so human can pick an alternative.
 
@@ -45,133 +43,188 @@ MIN_CONFIDENCE = 70  # below this → _no_match()
 LABEL_HIGH  = 90   # "Высокая уверенность"
 LABEL_GOOD  = 75   # "Хорошее совпадение"
 LABEL_CHECK = 70   # "Проверить вручную"
+# below 70   →     no ID assigned
 
-# ── Query expansion ───────────────────────────────────────────────────────────
+# ── Query expansion — from Notebook 2 session report ─────────────────────────
+# Essential for short abbreviations: АСТ, ТТГ, ОАК etc.
 _EXPAND_MAP = {
     # Lab abbreviations
-    "АСТ":        "АСТ аспартатаминотрансфераза",
-    "АЛТ":        "АЛТ аланинаминотрансфераза",
-    "АЛАТ":       "АЛАТ аланинаминотрансфераза",
-    "АСАТ":       "АСАТ аспартатаминотрансфераза",
-    "ЛДГ":        "ЛДГ лактатдегидрогеназа",
-    "ГГТ":        "ГГТ гамма-глутамилтранспептидаза",
-    "ЩФ":         "ЩФ щелочная фосфатаза",
-    "КФК":        "КФК креатинфосфокиназа",
-    "КК":         "КК креатинкиназа",
-    "СРБ":        "СРБ С-реактивный белок",
-    "РФ":         "РФ ревматоидный фактор",
-    "ПСА":        "ПСА простатический специфический антиген",
-    "ТТГ":        "ТТГ тиреотропный гормон",
-    "TSH":        "ТТГ тиреотропный гормон TSH",
-    "Т3":         "Т3 трийодтиронин",
-    "Т4":         "Т4 тироксин",
-    "ЛГ":         "ЛГ лютеинизирующий гормон",
-    "ФСГ":        "ФСГ фолликулостимулирующий гормон",
-    "АМГ":        "АМГ антимюллеров гормон",
-    "ДГЭА":       "ДГЭА дегидроэпиандростерон",
-    "ДЭА":        "ДЭА дегидроэпиандростерон",
-    "DHEA":       "DHEA дегидроэпиандростерон",
-    "ГТТ":        "ГТТ глюкозотолерантный тест",
-    "ПЦР":        "ПЦР полимеразная цепная реакция",
-    "ИФА":        "ИФА иммуноферментный анализ",
-    "ЛПВП":       "ЛПВП липопротеины высокой плотности",
-    "ЛПНП":       "ЛПНП липопротеины низкой плотности холестерин",
-    "ЛПОНП":      "ЛПОНП липопротеины очень низкой плотности",
-    "ХС":         "ХС холестерин",
-    "ОАК":        "ОАК общий анализ крови",
-    "ОАМ":        "ОАМ общий анализ мочи",
-    "СОЭ":        "СОЭ скорость оседания эритроцитов",
-    "HbsAg":      "HbsAg поверхностный антиген гепатита B Hepatitis B surface antigen HBsAg",
-    "HBsAg":      "HBsAg поверхностный антиген гепатита B Hepatitis B surface antigen HbsAg",
-    "Covid":      "Covid SARS-CoV SARS coronavirus коронавирус COVID-19 ПЦР антитела",
-    "covid":      "covid SARS-CoV SARS coronavirus коронавирус COVID-19 ПЦР антитела",
-    "COVID":      "COVID SARS-CoV SARS coronavirus коронавирус COVID-19 ПЦР антитела",
-    "SARS":       "SARS CoV coronavirus коронавирус COVID COVID-19",
-    "HIV":        "HIV ВИЧ антитела",
-    "ВИЧ":        "ВИЧ антитела иммунодефицит",
-    "Вич":        "ВИЧ антитела иммунодефицит HIV",
+    "АСТ":    "АСТ аспартатаминотрансфераза",
+    "АЛТ":    "АЛТ аланинаминотрансфераза",
+    "АЛАТ":   "АЛАТ аланинаминотрансфераза",
+    "АСАТ":   "АСАТ аспартатаминотрансфераза",
+    "ЛДГ":    "ЛДГ лактатдегидрогеназа",
+    "ГГТ":    "ГГТ гамма-глутамилтранспептидаза",
+    "ЩФ":     "ЩФ щелочная фосфатаза",
+    "КФК":    "КФК креатинфосфокиназа",
+    "КК":     "КК креатинкиназа",
+    "СРБ":    "СРБ С-реактивный белок",
+    "РФ":     "РФ ревматоидный фактор",
+    "ПСА":    "ПСА простатический специфический антиген",
+    "ТТГ":    "ТТГ тиреотропный гормон",
+    "TSH":    "ТТГ тиреотропный гормон TSH",
+    "Т3":     "Т3 трийодтиронин",
+    "Т4":     "Т4 тироксин",
+    "ЛГ":     "ЛГ лютеинизирующий гормон",
+    "ФСГ":    "ФСГ фолликулостимулирующий гормон",
+    "АМГ":    "АМГ антимюллеров гормон",
+    "ДГЭА":   "ДГЭА дегидроэпиандростерон",
+    "ДЭА":    "ДЭА дегидроэпиандростерон",
+    "DHEA":   "DHEA дегидроэпиандростерон",
+    "ГТТ":    "ГТТ глюкозотолерантный тест",
+    "ПЦР":    "ПЦР полимеразная цепная реакция",
+    "ИФА":    "ИФА иммуноферментный анализ",
+    "ЛПВП":   "ЛПВП липопротеины высокой плотности",
+    "ЛПНП":   "ЛПНП липопротеины низкой плотности",
+    "ХС":     "ХС холестерин",
+    "ОАК":    "ОАК общий анализ крови",
+    "ОАМ":    "ОАМ общий анализ мочи",
+    "СОЭ":    "СОЭ скорость оседания эритроцитов",
+    "HbsAg":  "HbsAg антиген гепатита B поверхностный",
+    "HBsAg":  "HBsAg антиген гепатита B поверхностный",
+    "HIV":    "HIV ВИЧ антитела",
+    "ВИЧ":    "ВИЧ антитела иммунодефицит",
     # Imaging abbreviations
-    "МРТ":        "МРТ магнитно-резонансная томография",
-    "КТ":         "КТ компьютерная томография",
-    "МСКТ":       "МСКТ мультиспиральная компьютерная томография",
-    "УЗИ":        "УЗИ ультразвуковое исследование",
-    "ЭКГ":        "ЭКГ электрокардиограмма",
-    "ЭЭГ":        "ЭЭГ электроэнцефалограмма",
-    "ЭМГ":        "ЭМГ электромиограмма",
-    "ЭХОКГ":      "ЭХОКГ эхокардиография ультразвуковое исследование сердца",
-    "ФГС":        "ФГС фиброгастроскопия",
-    "ФГДС":       "ФГДС фиброгастродуоденоскопия",
-    "ЭГДС":       "ЭГДС эзофагогастродуоденоскопия",
-    "КТГ":        "КТГ кардиотокография",
-    # New abbreviations from Hilol Hospital analysis
-    "АЦЦП":       "АЦЦП антитела к циклическому цитруллинированному пептиду ревматоидный артрит",
+    "МРТ":    "МРТ магнитно-резонансная томография",
+    "КТ":     "КТ компьютерная томография",
+    "МСКТ":   "МСКТ мультиспиральная компьютерная томография",
+    "УЗИ":    "УЗИ ультразвуковое исследование",
+    "ЭКГ":    "ЭКГ электрокардиограмма",
+    "ЭЭГ":    "ЭЭГ электроэнцефалограмма",
+    "ЭМГ":    "ЭМГ электромиограмма",
+    "ЭХОКГ":  "ЭХОКГ эхокардиография",
+    "ФГС":    "ФГС фиброгастроскопия",
+    "ФГДС":   "ФГДС фиброгастродуоденоскопия",
+    "ЭГДС":   "ЭГДС эзофагогастродуоденоскопия",
+    "КТГ":    "КТГ кардиотокография",
+    # ── Abbreviations from Hilol Hospital analysis ──────────────────────────
+    "АЦЦП":       "АЦЦП антитела к циклическому цитруллинированному пептиду",
     "АКТГ":       "АКТГ адренокортикотропный гормон",
-    "ПТИ":        "ПТИ протромбиновый индекс протромбин коагуляция",
+    "ПТИ":        "ПТИ протромбиновый индекс протромбин",
     "ХОЛТЕР":     "ХОЛТЕР суточное мониторирование ЭКГ сердца",
-    "НСГ":        "НСГ нейросонография головного мозга ультразвуковое",
-    "ТКДГ":       "ТКДГ транскраниальная допплерография сосудов",
-    "SCL":        "SCL склеродермия антитела аутоантитела",
-    "MUSK":       "MUSK мышечно-специфическая тирозинкиназа антитела миастения",
-    "Б27":        "Б27 HLA-B27 антиген лейкоцитарный генотипирование",
-    "ИФР":        "ИФР инсулиноподобный фактор роста соматомедин",
+    "НСГ":        "НСГ нейросонография головного мозга",
+    "ТКДГ":       "ТКДГ транскраниальная допплерография",
+    "ANA":        "ANA антинуклеарные антитела",
+    "Anti-dsDNA": "Anti-dsDNA антитела к двуспиральной ДНК волчанка",
+    "ENA":        "ENA антитела к ядерным антигенам",
+    "ЛПОНП":      "ЛПОНП липопротеины очень низкой плотности",
+    "Вич":        "ВИЧ антитела иммунодефицит HIV",
+    "Covid":      "Covid SARS-CoV коронавирус COVID-19",
+    "covid":      "covid SARS-CoV коронавирус COVID-19",
+    "COVID":      "COVID SARS-CoV коронавирус COVID-19",
+    "HBsAg":      "HBsAg поверхностный антиген гепатита B",
+    "HbsAg":      "HbsAg поверхностный антиген гепатита B",
     "МНО":        "МНО международное нормализованное отношение коагуляция",
     "СМАД":       "СМАД суточное мониторирование артериального давления",
-    "ANA":        "ANA антинуклеарные антитела аутоиммунный",
-    "Anti-dsDNA": "Anti-dsDNA антитела к двуспиральной ДНК системная красная волчанка",
-    "ENA":        "ENA антитела к экстрагируемым ядерным антигенам",
-    "HLAB27":     "HLAB27 HLA-B27 антиген лейкоцитарный генотипирование Бехтерев",
     "ПТГ":        "ПТГ паратиреоидный гормон паратгормон",
     "СТГ":        "СТГ соматотропный гормон гормон роста",
-    "АТ-ТПО":     "АТ-ТПО антитела к тиреоидной пероксидазе",
-    "АТ-ТГ":      "АТ-ТГ антитела к тиреоглобулину",
     "ХГЧ":        "ХГЧ хорионический гонадотропин беременность",
-    "ХГ":         "ХГ хорионический гонадотропин беременность",
     "АФП":        "АФП альфа-фетопротеин онкомаркер",
-    "РЭА":        "РЭА раково-эмбриональный антиген онкомаркер",
-    "ПАП":        "ПАП цитология мазок шейка матки",
-    "ОЖСС":       "ОЖСС железосвязывающая способность сыворотки железо",
-    "HDV":        "HDV гепатит D дельта вирус",
-    "HBV":        "HBV гепатит B вирус ДНК",
-    "HCV":        "HCV гепатит C вирус антитела РНК",
-    "HAV":        "HAV гепатит A вирус антитела",
+    "РЭА":        "РЭА раково-эмбриональный антиген",
+    "ОЖСС":       "ОЖСС железосвязывающая способность сыворотки",
+    # ── Uzbek Latin medical terms → Russian equivalents ─────────────────────
+    # These handle clinics that enter service names in Uzbek
+    "Albumin":         "альбумин белок сыворотка",
+    "Globulin":        "глобулин белок",
+    "Karbamid":        "карбамид мочевина",
+    "Kreatinin":       "креатинин",
+    "Triglitseridlar": "триглицериды",
+    "Xolesterin":      "холестерин",
+    "Glyukoza":        "глюкоза сахар",
+    "Bilirubin":       "билирубин",
+    "Ferritin":        "ферритин",
+    "Gemoglobin":      "гемоглобин",
+    "Fosfor":          "фосфор",
+    "Magniy":          "магний",
+    "Kaliy":           "калий",
+    "Natriy":          "натрий",
+    "Kaltsiy":         "кальций",
+    "Xlor":            "хлор хлориды",
+    "Temir":           "железо сывороточное",
+    "Sink":            "цинк",
+    "Mis":             "медь",
+    "Seruloplazmin":   "церулоплазмин",
+    "Sistatin":        "цистатин",
+    "Homosistein":     "гомоцистеин",
+    "Xolinesteraza":   "холинэстераза",
+    "Kalsitonin":      "кальцитонин",
+    "Osteokalsin":     "остеокальцин",
+    "Gialuron":        "гиалуроновая кислота",
+    "Tsh":             "ТТГ тиреотропный гормон",
+    "TSh":             "ТТГ тиреотропный гормон",
+    "Tiroglobulin":    "тиреоглобулин",
+    "Kortizol":        "кортизол",
+    "Testosteron":     "тестостерон",
+    "Estradiol":       "эстрадиол",
+    "Estriol":         "эстриол",
+    "Progesteron":     "прогестерон",
+    "Prolaktin":       "пролактин",
+    "Inhibin":         "ингибин",
+    "Insulin":         "инсулин",
+    "Mikroalbumin":    "микроальбумин",
+    "Koprogramma":     "копрограмма",
+    "Gelmint":         "гельминты яйца глистов",
+    "gelmint":         "гельминты яйца глистов",
+    "Najas":           "кал фекалии",
+    "najas":           "кал фекалии",
+    "Disbiyoz":        "дисбиоз дисбактериоз кишечника",
+    "Protrombin":      "протромбин коагуляция",
+    "Fibrinogen":      "фибриноген",
+    "Koagulograma":    "коагулограмма",
+    "Immunoglobulin":  "иммуноглобулин",
+    "Antikor":         "антитела",
+    "antikor":         "антитела",
+    "Antikorlar":      "антитела",
+    "UZD":             "УЗИ ультразвуковое исследование",
+    "uzd":             "УЗИ ультразвуковое исследование",
+    "Ultratovush":     "ультразвуковое исследование УЗИ",
+    "ultratovush":     "ультразвуковое исследование УЗИ",
+    "Doppler":         "допплерография",
+    "doppler":         "допплерография",
+    "Dupleks":         "дуплексное сканирование",
+    "Elastografiya":   "эластография",
+    "Jigar":           "печень",
+    "jigar":           "печень",
+    "Buyrak":          "почка почки",
+    "buyrak":          "почка почки",
+    "Taloq":           "селезёнка",
+    "Qalqonsimon":     "щитовидная железа",
+    "qalqonsimon":     "щитовидная железа",
+    "Bachadon":        "матка",
+    "bachadon":        "матка",
+    "Prostata":        "простата предстательная железа",
+    "prostata":        "простата предстательная железа",
+    "Oshqozon":        "желудок",
+    "Skrotum":         "мошонка",
+    "Limfa":           "лимфатические узлы",
+    "PCR":             "ПЦР полимеразная цепная реакция",
+    "Gepatit":         "гепатит",
+    "gepatit":         "гепатит",
+    "Qon":             "кровь анализ крови",
+    "Eritrotsit":      "эритроциты",
+    "Leykosit":        "лейкоциты",
+    "Trombotsit":      "тромбоциты",
+    "Allergopanel":    "аллергопанель аллергены",
+    "allergopanel":    "аллергопанель аллергены",
+    "Neyrosonografiya": "нейросонография НСГ головной мозг",
+    "Fibroskanatsiya": "фибросканирование эластометрия",
+    "Siydik":          "моча мочи",
+    "siydik":          "моча мочи",
+    "Kalprotektin":    "кальпротектин",
+    "Sil":             "туберкулёз QuantiFERON",
+    "Giardia":         "лямблии гиардия",
+    "giardia":         "лямблии гиардия",
+    "Reberg":          "проба Реберга клиренс креатинина",
+    "Qorin":           "брюшная полость живот",
+    "qorin":           "брюшная полость живот",
+    "Yurak":           "сердце кардио",
+    "yurak":           "сердце кардио",
+    "Sut":             "молочная железа грудь",
+    "Simfiz":          "лонное сочленение симфиз",
+    "Timus":           "тимус вилочковая железа",
+    "Aorta":           "аорта",
+    "aorta":           "аорта",
 }
-
-# ── Cyrillic/Latin normalization for mixed-script names ──────────────────────
-# Some clinic names use Cyrillic letters inside Latin words e.g. "HСV" (Cyrillic С)
-_MIXED_SCRIPT_MAP = {
-    "С": "C", "с": "c",  # Cyrillic С → Latin C
-    "А": "A", "а": "a",  # Cyrillic А → Latin A
-    "В": "B", "в": "b",  # Cyrillic В → Latin B (context-dependent)
-    "Е": "E", "е": "e",  # Cyrillic Е → Latin E
-    "К": "K", "к": "k",  # Cyrillic К → Latin K
-    "М": "M", "м": "m",  # Cyrillic М → Latin M
-    "Н": "H", "н": "h",  # Cyrillic Н → Latin H
-    "О": "O", "о": "o",  # Cyrillic О → Latin O
-    "Р": "P", "р": "p",  # Cyrillic Р → Latin P
-    "Т": "T", "т": "t",  # Cyrillic Т → Latin T
-    "Х": "X", "х": "x",  # Cyrillic Х → Latin X
-}
-
-def _normalize_mixed_script(text: str) -> str:
-    """
-    Normalize mixed Cyrillic/Latin tokens.
-    Detects tokens that look like Latin abbreviations but contain Cyrillic lookalikes,
-    and converts them to pure Latin. E.g. 'HСV' → 'HCV'.
-    """
-    tokens = text.split()
-    result = []
-    for token in tokens:
-        # Check if token has both Latin and Cyrillic characters
-        has_latin   = any(c.isascii() and c.isalpha() for c in token)
-        has_cyrillic = any('\u0400' <= c <= '\u04FF' for c in token)
-        if has_latin and has_cyrillic:
-            # Mixed token — normalize Cyrillic lookalikes to Latin
-            normalized = ''.join(_MIXED_SCRIPT_MAP.get(c, c) for c in token)
-            result.append(normalized)
-        else:
-            result.append(token)
-    return ' '.join(result)
-
 
 # ── Noise patterns to strip before matching ───────────────────────────────────
 _NOISE_PATTERNS = [
@@ -190,9 +243,6 @@ _NOISE_PATTERNS = [
     r"\(?\s*сахарная\s+кривая\s*\)?",
     r"\bв\s+\d+.х\s+порциях?\b",
     r"\bпо\s+нечипоренко\b", r"\bпо\s+земницкому\b",
-    r"\bClia\b", r"\bclia\b",          # lab brand name noise
-    r"\bИФА\b",                         # method noise when appended to name
-    r"\bэкспресс\s+тест\b",
 ]
 _NOISE_RE = re.compile("|".join(_NOISE_PATTERNS), re.IGNORECASE)
 
@@ -203,92 +253,90 @@ _NOISE_RE = re.compile("|".join(_NOISE_PATTERNS), re.IGNORECASE)
 class EmbeddingMatcher:
     """
     Loads the fine-tuned model and FAISS index once.
-    Uses intfloat/multilingual-e5-base (requires "query: " prefix).
+    Provides fast top-k search against the catalog.
     """
     def __init__(self):
         self.model      = None
         self.index      = None
-        self.meta       = None
+        self.meta       = None   # list of {service_id, name_ru, name_uz, type}
         self.loaded     = False
         self.load_error = ""
 
     def load(self, model_dir: Path) -> bool:
+        """Try to load model + index. Returns True on success."""
         try:
             import faiss
-            import os
             from sentence_transformers import SentenceTransformer
 
-            HF_REPO  = "admin11011/medpay-matcher"
-            hf_token = os.environ.get("HF_TOKEN")
-
-            # ── Try local first (works when running locally) ──────────────────
             model_path = model_dir / "model"
             faiss_path = model_dir / "catalog.faiss"
             meta_path  = model_dir / "catalog_meta.json"
 
-            if model_path.exists() and faiss_path.exists() and meta_path.exists():
-                print(f"[matcher] Loading from local: {model_dir}")
-                self.model = SentenceTransformer(str(model_path))
-                self.index = faiss.read_index(str(faiss_path))
-                with open(meta_path, encoding="utf-8") as f:
-                    self.meta = json.load(f)
-                self.loaded = True
-                return True
+            if not model_path.exists() or not faiss_path.exists() or not meta_path.exists():
+                # Try HuggingFace Hub (for Streamlit Cloud deployment)
+                return self._try_load_from_hf()
 
-            # ── Fallback: load from HuggingFace Hub (Streamlit Cloud) ─────────
-            print(f"[matcher] Local model not found, loading from HuggingFace: {HF_REPO}")
-            from huggingface_hub import snapshot_download, hf_hub_download
+            self.model = SentenceTransformer(str(model_path))
+            self.index = faiss.read_index(str(faiss_path))
 
-            local_dir = "/tmp/medpay_model"
-            os.makedirs(local_dir, exist_ok=True)
-
-            # Download model weights
-            snapshot_download(
-                repo_id=HF_REPO,
-                token=hf_token,
-                ignore_patterns=["catalog.faiss", "catalog_meta.json"],
-                local_dir=local_dir,
-            )
-            self.model = SentenceTransformer(local_dir)
-
-            # Download FAISS index
-            faiss_local = hf_hub_download(
-                repo_id=HF_REPO,
-                filename="catalog.faiss",
-                token=hf_token,
-                local_dir=local_dir,
-            )
-            self.index = faiss.read_index(faiss_local)
-
-            # Download catalog meta
-            meta_local = hf_hub_download(
-                repo_id=HF_REPO,
-                filename="catalog_meta.json",
-                token=hf_token,
-                local_dir=local_dir,
-            )
-            with open(meta_local, encoding="utf-8") as f:
+            with open(meta_path, encoding="utf-8") as f:
                 self.meta = json.load(f)
 
             self.loaded = True
-            print(f"[matcher] Loaded from HuggingFace successfully")
             return True
 
         except ImportError as e:
-            self.load_error = f"Missing package: {e}"
+            self.load_error = f"Missing package: {e}. Run: pip install sentence-transformers faiss-cpu"
             return False
         except Exception as e:
             self.load_error = f"Load error: {e}"
             return False
 
+    def _try_load_from_hf(self) -> bool:
+        """Try loading model from HuggingFace Hub (Streamlit Cloud fallback)."""
+        try:
+            import faiss, os
+            from sentence_transformers import SentenceTransformer
+            from huggingface_hub import snapshot_download, hf_hub_download
+
+            HF_REPO  = "admin11011/medpay-matcher"
+            hf_token = os.environ.get("HF_TOKEN")
+            local_dir = "/tmp/medpay_model"
+            os.makedirs(local_dir, exist_ok=True)
+
+            print(f"[matcher] Loading from HuggingFace: {HF_REPO}")
+            snapshot_download(repo_id=HF_REPO, token=hf_token,
+                              ignore_patterns=["catalog.faiss", "catalog_meta.json"],
+                              local_dir=local_dir)
+            self.model = SentenceTransformer(local_dir)
+
+            faiss_local = hf_hub_download(repo_id=HF_REPO, filename="catalog.faiss",
+                                          token=hf_token, local_dir=local_dir)
+            self.index = faiss.read_index(faiss_local)
+
+            meta_local = hf_hub_download(repo_id=HF_REPO, filename="catalog_meta.json",
+                                         token=hf_token, local_dir=local_dir)
+            with open(meta_local, encoding="utf-8") as f:
+                self.meta = json.load(f)
+
+            self.loaded = True
+            print("[matcher] Loaded from HuggingFace successfully")
+            return True
+        except Exception as e:
+            self.load_error = f"HF load error: {e}"
+            return False
+
     def search(self, query: str, k: int = 3) -> list[dict]:
-        """Search catalog. Uses 'query: ' prefix required for E5 model."""
+        """
+        Search catalog for top-k matches.
+        Returns list of {service_id, name_ru, name_uz, type, score}
+        score is 0-100 (cosine similarity × 100).
+        """
         if not self.loaded:
             return []
 
-        # E5 model requires "query: " prefix
-        expanded = "query: " + expand_query(_normalize_mixed_script(query))
-
+        # E5 model requires "query: " prefix for search queries
+        expanded = "query: " + expand_query(query)
         emb = self.model.encode(
             [expanded],
             normalize_embeddings=True,
@@ -311,11 +359,13 @@ class EmbeddingMatcher:
         return results
 
 
+# Singleton — loaded once when matcher is first used
 _embedding_matcher = EmbeddingMatcher()
 _model_load_attempted = False
 
 
 def _get_embedding_matcher() -> EmbeddingMatcher:
+    """Load model on first use, return singleton."""
     global _model_load_attempted
     if not _model_load_attempted:
         _model_load_attempted = True
@@ -332,7 +382,11 @@ def _get_embedding_matcher() -> EmbeddingMatcher:
 # QUERY EXPANSION + NORMALIZATION
 # ═══════════════════════════════════════════════════════════════════════════════
 def expand_query(query: str) -> str:
-    """Expand abbreviations token by token."""
+    """
+    Expand abbreviations token by token.
+    'АСТ' → 'АСТ аспартатаминотрансфераза'
+    'ТТГ (TSH)' → 'ТТГ тиреотропный гормон TSH ТТГ тиреотропный гормон'
+    """
     tokens   = query.split()
     expanded = []
     for token in tokens:
@@ -350,9 +404,11 @@ def _strip_noise(text: str) -> str:
 
 
 def _normalize_fuzzy(text: str) -> str:
-    t = _normalize_mixed_script(text.lower().strip())
+    """Normalize for fuzzy matching (lowercase + noise strip + expand)."""
+    t = text.lower().strip()
     t = _NOISE_RE.sub(" ", t)
     t = re.sub(r"\s+", " ", t).strip()
+    # Expand abbreviations
     tokens = t.split()
     expanded = []
     for tok in tokens:
@@ -369,6 +425,10 @@ def _normalize_fuzzy(text: str) -> str:
 # CONFIDENCE LABELING
 # ═══════════════════════════════════════════════════════════════════════════════
 def confidence_label(score: float) -> str:
+    """
+    Human-readable label based on score.
+    All matches get an ID — the label tells the human how carefully to check.
+    """
     if score >= LABEL_HIGH:
         return "Высокая уверенность"
     if score >= LABEL_GOOD:
@@ -379,6 +439,7 @@ def confidence_label(score: float) -> str:
 
 
 def confidence_color(score: float) -> str:
+    """CSS color hint for UI."""
     if score >= LABEL_HIGH:  return "green"
     if score >= LABEL_GOOD:  return "orange"
     if score >= LABEL_CHECK: return "red"
@@ -389,6 +450,7 @@ def confidence_color(score: float) -> str:
 # FUZZY FALLBACK ENGINE
 # ═══════════════════════════════════════════════════════════════════════════════
 def build_search_corpus(catalog_df: pd.DataFrame) -> list[tuple[str, str, str]]:
+    """Build (normalized_name, original_name, id) for fuzzy fallback."""
     corpus = []
     for _, row in catalog_df.iterrows():
         rtype = safe_str(row.get("type", "")).strip()
@@ -407,11 +469,12 @@ def _fuzzy_top3(
     corpus: list[tuple[str, str, str]],
     catalog_df: pd.DataFrame,
 ) -> list[dict]:
-    norm_q     = _normalize_fuzzy(query)
-    norm_q_ns  = _normalize_fuzzy(_strip_noise(query))
+    """Return top-3 matches using RapidFuzz."""
+    norm_q    = _normalize_fuzzy(query)
+    norm_q_ns = _normalize_fuzzy(_strip_noise(query))
     corp_norms = [c[0] for c in corpus]
 
-    best: dict[str, dict] = {}
+    best: dict[str, dict] = {}   # service_id → best result
 
     for q in list({norm_q, norm_q_ns}):
         for scorer in [fuzz.token_sort_ratio, fuzz.token_set_ratio, fuzz.partial_ratio]:
@@ -420,11 +483,12 @@ def _fuzzy_top3(
             for _, score, idx in hits:
                 _, orig, sid = corpus[idx]
                 if sid not in best or score > best[sid]["score"]:
+                    # Verify ID is valid
                     if sid in catalog_df["ID number"].values:
                         cat_r  = catalog_df[catalog_df["ID number"] == sid]
                         ctype  = cat_r.iloc[0]["type"] if not cat_r.empty else ""
-                        name_r = safe_str(cat_r.iloc[0].get("Name RU", "")) if not cat_r.empty else ""
-                        name_u = safe_str(cat_r.iloc[0].get("Name UZ", "")) if not cat_r.empty else ""
+                        name_r = safe_str(cat_r.iloc[0].get("Name RU","")) if not cat_r.empty else ""
+                        name_u = safe_str(cat_r.iloc[0].get("Name UZ","")) if not cat_r.empty else ""
                         best[sid] = {
                             "service_id": sid,
                             "name_ru":    name_r,
@@ -433,6 +497,7 @@ def _fuzzy_top3(
                             "score":      round(score),
                         }
 
+    # Return top-3 sorted by score
     sorted_results = sorted(best.values(), key=lambda x: x["score"], reverse=True)
     return sorted_results[:3]
 
@@ -442,20 +507,29 @@ def _fuzzy_top3(
 # ═══════════════════════════════════════════════════════════════════════════════
 def match_service(
     clinic_name: str,
-    corpus: list[tuple[str, str, str]],
+    corpus: list[tuple[str, str, str]],   # fuzzy corpus (always passed for fallback)
     catalog_df: pd.DataFrame,
 ) -> dict:
+    """
+    Match a clinic service name to the catalog.
+
+    Returns:
+        matched_name:    best match catalog name (RU)
+        matched_id:      catalog ID (always set if any match found)
+        confidence:      0-100 score
+        comment:         human-readable label
+        top3_candidates: list of top-3 {service_id, name_ru, score, type}
+    """
     if not clinic_name:
         return _no_match()
 
-    # Normalize mixed script before matching
-    clinic_name = _normalize_mixed_script(clinic_name)
     matcher = _get_embedding_matcher()
 
     # ── Path A: Fine-tuned embedding model ────────────────────────────────────
     if matcher.loaded:
         candidates = matcher.search(clinic_name, k=3)
 
+        # Filter to allowed types
         candidates = [
             c for c in candidates
             if c["type"] in ALLOWED_CATALOG_TYPES
@@ -467,20 +541,25 @@ def match_service(
         best  = candidates[0]
         score = best["score"]
 
+        # Block low-confidence matches — no ID assigned below 70%
         if score < MIN_CONFIDENCE:
             return _no_match()
 
         sid = best["service_id"]
 
+        # Always verify ID exists in catalog
         if sid not in catalog_df["ID number"].values:
             return _no_match()
 
-        cat_r   = catalog_df[catalog_df["ID number"] == sid]
-        name_ru = safe_str(cat_r.iloc[0].get("Name RU", "")) if not cat_r.empty else best["name_ru"]
-        name_uz = safe_str(cat_r.iloc[0].get("Name UZ", "")) if not cat_r.empty else best["name_uz"]
-        display = name_ru or name_uz or best["name_ru"]
-        label   = confidence_label(score)
+        # Get full catalog row for name
+        cat_r    = catalog_df[catalog_df["ID number"] == sid]
+        name_ru  = safe_str(cat_r.iloc[0].get("Name RU", "")) if not cat_r.empty else best["name_ru"]
+        name_uz  = safe_str(cat_r.iloc[0].get("Name UZ", "")) if not cat_r.empty else best["name_uz"]
+        display  = name_ru or name_uz or best["name_ru"]
 
+        label    = confidence_label(score)
+
+        # Format top-3 for UI display
         top3 = [
             {
                 "service_id": c["service_id"],
@@ -512,6 +591,7 @@ def match_service(
     best  = fuzzy_top3[0]
     score = best["score"]
 
+    # Block low-confidence matches — no ID assigned below 70%
     if score < MIN_CONFIDENCE:
         return _no_match()
 
@@ -558,7 +638,11 @@ def _no_match() -> dict:
 # BATCH MATCHING  (used by app.py)
 # ═══════════════════════════════════════════════════════════════════════════════
 def match_all_services(services: list[dict], catalog_df: pd.DataFrame) -> list[dict]:
-    corpus = build_search_corpus(catalog_df)
+    """
+    Match a list of extracted clinic services to the catalog.
+    Returns list of matching rows ready for the review table.
+    """
+    corpus = build_search_corpus(catalog_df)  # built once, used for fuzzy fallback
     rows   = []
 
     for svc in services:
@@ -568,42 +652,24 @@ def match_all_services(services: list[dict], catalog_df: pd.DataFrame) -> list[d
 
         m = match_service(name, corpus, catalog_df)
 
+        # Use catalog type if matched (overrides extracted type)
         if m["matched_id"] != "-":
             cat_r = catalog_df[catalog_df["ID number"] == m["matched_id"]]
             if not cat_r.empty:
                 ctype = cat_r.iloc[0].get("type", "").strip()
                 if ctype in ALLOWED_CATALOG_TYPES:
+                    # Normalize: catalog uses "Анализ", app uses "Анализы"
                     svc_type = "Анализы" if ctype == "Анализ" else ctype
-
-        # Build comment with top-2 alternatives for unmatched/low confidence
-        comment = m["comment"]
-        top3    = m.get("top3_candidates", [])
-        if m["matched_id"] == "-" and len(top3) > 0:
-            alts = "; ".join(
-                f'{c["service_id"]} {c["name"][:30]} ({c["score"]}%)'
-                for c in top3[:2]
-                if c["score"] >= 55
-            )
-            if alts:
-                comment = f'Не найдено | Варианты: {alts}'
-        elif m["confidence"] < 75 and len(top3) > 1:
-            alts = "; ".join(
-                f'{c["service_id"]} ({c["score"]}%)'
-                for c in top3[1:3]
-                if c["score"] >= 60
-            )
-            if alts:
-                comment = f'{m["comment"]} | Альт: {alts}'
 
         rows.append({
             "Название в MedPay":  m["matched_name"],
             "Название в клинике": name,
             "ID":                 m["matched_id"],
             "Уверенность":        m["confidence"],
-            "Комментарий":        comment,
+            "Комментарий":        m["comment"],
             "Цена":               price,
             "Тип услуг":          svc_type,
-            "top3":               top3,
+            "top3":               m.get("top3_candidates", []),
             "method":             m.get("method", ""),
         })
 
@@ -611,6 +677,7 @@ def match_all_services(services: list[dict], catalog_df: pd.DataFrame) -> list[d
 
 
 def model_status() -> dict:
+    """Return info about the loaded model for display in UI."""
     m = _get_embedding_matcher()
     return {
         "loaded":     m.loaded,
