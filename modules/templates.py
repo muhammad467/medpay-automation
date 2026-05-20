@@ -1,9 +1,11 @@
 import re
 
 
-def _detect_material(name_ru: str) -> str:
-    """Detect bio material type from Russian service name."""
-    name_lower = name_ru.lower()
+def _detect_material(name_ru: str, name_uz: str = "") -> str:
+    """Detect bio material type from Russian and Uzbek service name."""
+    name_lower    = name_ru.lower()
+    name_uz_lower = (name_uz or "").lower()
+
     if any(k in name_lower for k in ["кровь", "кровн", "сыворотк", "плазм", "гематолог",
                                       "биохимия", "гормон", "антитела", "антитело",
                                       "серолог", "иммуноглоб", "иммунофер", "пцр крови",
@@ -14,9 +16,11 @@ def _detect_material(name_ru: str) -> str:
                                       "эстрадиол", "прогестерон", "билирубин", "лейкоцит",
                                       "эритроцит", "тромбоцит", "гемоглобин"]):
         return "blood"
-    if any(k in name_lower for k in ["моча", "мочи", "мочу", "мочой", "мочевин", "мочевой", "урин",
+    if any(k in name_lower for k in ["моча", "мочи", "мочу", "мочой", "моче", "мочевин", "мочевой", "урин",
                                       "анализ мочи", "исследование мочи", "проба мочи",
-                                      "цитология мочи", "посев мочи"]):
+                                      "цитология мочи", "посев мочи"]) or \
+       any(k in name_uz_lower for k in ["siydik", "siydikning", "siydikdagi",
+                                         "siydikdan", "siydik tahlil"]):
         return "urine"
     if any(k in name_lower for k in ["кал", "кале", "кала", "калу", "копрограмм",
                                       "исследование кала", "яйца глист", "простейши",
@@ -76,7 +80,7 @@ def get_descriptions(service_type: str, name_ru: str, name_uz: str, name_kr: str
 
 
 def _analysis_templates(name_ru: str, name_uz: str, name_kr: str) -> dict:
-    material = _detect_material(name_ru)
+    material = _detect_material(name_ru, name_uz)
 
     desc_ru = (
         f"{name_ru} — лабораторное исследование, которое помогает оценить соответствующий "
