@@ -122,7 +122,7 @@ def normalize_service_type(raw: str) -> str:
     ANALYSIS_VARIANTS = {
         "анализы", "анализ", "analysis", "analyses", "analyze",
         "analyzes", "tahlil", "tahlillar", "таҳлил", "таҳлиллар",
-        "лаборатор", "lab", "лаб",
+        "лаборатор", "lab", "лаб", "analiz", "anali", "tekshir",
     }
     DIAGNOSTICS_VARIANTS = {
         "диагностика", "диагностик", "diagnostics", "diagnostic",
@@ -546,7 +546,7 @@ elif page == "setup":
                         n_no  = len(matched) - n_ok
                         n_low = sum(1 for r in matched
                                     if r["ID"] != "-"
-                                    and int(r.get("Уверенность", 0) or 0) < 90)
+                                    and int(float(r.get("Уверенность", 0) or 0) if str(r.get("Уверенность", 0)).replace(".", "").replace("-", "").isdigit() or str(r.get("Уверенность", 0)) == "0" else 0) < 90)
                         st.session_state["matched"]       = matched
                         st.session_state["match_summary"] = (n_ok, n_no, n_low)
                         st.session_state["ready_df"]      = _make_ready(matched, cat_df)
@@ -575,7 +575,7 @@ elif page == "setup":
                         n_no  = len(matched) - n_ok
                         n_low = sum(1 for r in matched
                                     if r["ID"] != "-"
-                                    and int(r.get("Уверенность", 0) or 0) < 90)
+                                    and int(float(r.get("Уверенность", 0) or 0) if str(r.get("Уверенность", 0)).replace(".", "").replace("-", "").isdigit() or str(r.get("Уверенность", 0)) == "0" else 0) < 90)
                         st.session_state["matched"]       = matched
                         st.session_state["match_summary"] = (n_ok, n_no, n_low)
                         st.session_state["ready_df"]      = _make_ready(matched, cat_df)
@@ -760,7 +760,7 @@ elif page == "work":
             n_no  = len(matched) - n_ok
             n_low = sum(1 for r in matched
                         if r["ID"] != "-"
-                        and int(r.get("Уверенность", 0) or 0) < 90)
+                        and int(float(r.get("Уверенность", 0) or 0) if str(r.get("Уверенность", 0)).replace(".", "").replace("-", "").isdigit() or str(r.get("Уверенность", 0)) == "0" else 0) < 90)
             st.session_state["matched"]       = matched
             st.session_state["match_summary"] = (n_ok, n_no, n_low)
             st.session_state["work_step"]     = "review_match"
@@ -773,14 +773,20 @@ elif page == "work":
 
         st.markdown(f"### ✏️ Проверка матчинга · {clinic_nm} / {district}")
 
+        def _conf(r):
+            try:
+                return int(float(r.get("Уверенность", 0) or 0))
+            except (ValueError, TypeError):
+                return 0
+
         mc1, mc2, mc3, mc4, mc5 = st.columns(5)
         mc1.metric("Всего",               len(matched))
-        mc2.metric("✅ Высокая (≥90%)",   sum(1 for r in matched if int(r.get("Уверенность",0) or 0) >= 90))
-        mc3.metric("🟡 Хорошая (75-89%)", sum(1 for r in matched if 75 <= int(r.get("Уверенность",0) or 0) < 90))
-        mc4.metric("🔴 Проверить (<75%)", sum(1 for r in matched if 0 < int(r.get("Уверенность",0) or 0) < 75))
+        mc2.metric("✅ Высокая (≥90%)",   sum(1 for r in matched if _conf(r) >= 90))
+        mc3.metric("🟡 Хорошая (75-89%)", sum(1 for r in matched if 75 <= _conf(r) < 90))
+        mc4.metric("🔴 Проверить (<75%)", sum(1 for r in matched if 0 < _conf(r) < 75))
         mc5.metric("⬜ Не найдено",        sum(1 for r in matched if str(r.get("ID","-")) == "-"))
 
-        needs_review = [r for r in matched if int(r.get("Уверенность", 0) or 0) < 75
+        needs_review = [r for r in matched if _conf(r) < 75
                         and str(r.get("ID", "-")) != "-"]
         not_found    = [r for r in matched if str(r.get("ID", "-")) == "-"]
 
@@ -803,7 +809,7 @@ elif page == "work":
                     "или отредактируйте ID вручную в таблице ниже."
                 )
                 for ridx, row in enumerate(rows_to_review):
-                    score = int(row.get("Уверенность", 0) or 0)
+                    score = _conf(row)
                     sid   = str(row.get("ID", "-"))
                     label = row.get("Комментарий", "")
                     top3  = row.get("top3", [])
