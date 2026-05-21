@@ -185,9 +185,12 @@ def build_ready_df(
             cat_row = catalog_df[catalog_df["ID number"] == service_id]
             if not cat_row.empty:
                 r = cat_row.iloc[0]
-                name_ru = safe_str(r.get("Name RU", "")) or clinic_svc
+                # Имя RU = clinic's own service name (not catalog name)
+                # Имя UZ = catalog UZ name (translated)
+                # Имя KR = catalog KR name (translated)
                 name_uz = safe_str(r.get("Name UZ", "")) or "-"
                 name_kr = safe_str(r.get("Name KR", "")) or "-"
+                # name_ru stays as clinic_svc (clinic's original name)
 
         name_ru = clean_cell(name_ru)
         name_uz = clean_cell(name_uz)
