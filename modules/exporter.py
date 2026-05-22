@@ -151,6 +151,8 @@ def build_ready_df(
     clinic_name: str,
     district: str,
     catalog_df: pd.DataFrame,
+    gemini_api_key: str = "",
+    progress_callback=None,
 ) -> pd.DataFrame:
     """Build final ready DataFrame with all 22 columns."""
 
@@ -158,17 +160,41 @@ def build_ready_df(
     for row in matched_rows:
         row["Цена"] = _normalize_price(row.get("Цена", ""))
 
-    # If any price is 9999999 → clinic name gets * suffix
     has_on_request = _has_on_request_price(matched_rows)
     export_name    = _clinic_export_name(clinic_name, has_on_request)
     district       = _normalize_district(district.strip())
+
+    # ── Gemini translation (if API key provided) ──────────────────────────────
+    gemini_cache = {}
+    use_gemini   = bool(gemini_api_key and gemini_api_key.strip())
+
+    if use_gemini:
+        try:
+            from modules.gemini_translator import translate_services_batch
+            # Collect unique service names that have matched IDs
+            unique_svcs = []
+            seen = set()
+            for row in matched_rows:
+                sid  = clean_cell(str(row.get("ID", "-")))
+                name = clean_cell(str(row.get("Название в клинике", "")))
+                stype = clean_cell(str(row.get("Тип услуг", "Диагностика")))
+                if sid not in ("-", "") and name and name not in seen:
+                    unique_svcs.append({"name_ru": name, "type": stype})
+                    seen.add(name)
+            if unique_svcs:
+                gemini_cache = translate_services_batch(
+                    unique_svcs, gemini_api_key, progress_callback
+                )
+                print(f"[gemini] Translated {len(gemini_cache)} services")
+        except Exception as e:
+            print(f"[gemini] Translation failed: {e} — falling back to templates")
+            gemini_cache = {}
+            use_gemini   = False
 
     records = []
 
     for row in matched_rows:
         service_id   = clean_cell(str(row.get("ID", "-")))
-
-        # Skip unmatched rows — only include if ID was found or user filled it in
         if service_id in ("-", ""):
             continue
 
@@ -185,12 +211,22 @@ def build_ready_df(
             cat_row = catalog_df[catalog_df["ID number"] == service_id]
             if not cat_row.empty:
                 r = cat_row.iloc[0]
-                # Имя RU = clinic's own service name (not catalog name)
-                # Имя UZ = catalog UZ name (translated)
-                # Имя KR = catalog KR name (translated)
-                name_uz = safe_str(r.get("Name UZ", "")) or "-"
-                name_kr = safe_str(r.get("Name KR", "")) or "-"
-                # name_ru stays as clinic_svc (clinic's original name)
+                cat_uz = safe_str(r.get("Name UZ", ""))
+                cat_kr = safe_str(r.get("Name KR", ""))
+                if cat_uz and len(cat_uz) > 2 and (cat_uz[0].isupper() or cat_uz[0].isdigit()):
+                    name_uz = cat_uz
+                else:
+                    name_uz = "-"
+                if cat_kr and len(cat_kr) > 2 and (cat_kr[0].isupper() or cat_kr[0].isdigit()):
+                    name_kr = cat_kr
+                else:
+                    name_kr = "-"
+
+        # Override with Gemini translation if available
+        gemini_data = gemini_cache.get(clinic_svc) if use_gemini else None
+        if gemini_data:
+            if gemini_data.get("name_uz") and gemini_data["name_uz"] != "-":
+                name_uz = gemini_data["name_uz"]
 
         name_ru = clean_cell(name_ru)
         name_uz = clean_cell(name_uz)
@@ -199,7 +235,28 @@ def build_ready_df(
             name_kr = uz_latin_to_cyrillic(name_uz) if name_uz and name_uz != "-" else "-"
         name_kr = clean_cell(name_kr)
 
-        texts    = get_descriptions(service_type, name_ru, name_uz, name_kr)
+        # ── Descriptions and requirements ─────────────────────────────────────
+        if gemini_data:
+            # Use Gemini-generated content
+            desc_ru = clean_cell(gemini_data.get("desc_ru", ""))
+            desc_uz = clean_cell(gemini_data.get("desc_uz", ""))
+            req_ru  = clean_cell(gemini_data.get("req_ru",  ""))
+            req_uz  = clean_cell(gemini_data.get("req_uz",  ""))
+            # Generate KR from UZ via transliteration
+            desc_kr = clean_cell(uz_latin_to_cyrillic(desc_uz)) if desc_uz else ""
+            req_kr  = clean_cell(uz_latin_to_cyrillic(req_uz))  if req_uz  else ""
+            texts = {
+                "Описание RU":   desc_ru,
+                "Описание UZ":   desc_uz,
+                "Описание KR":   desc_kr,
+                "Требования RU": req_ru,
+                "Требования UZ": req_uz,
+                "Требования KR": req_kr,
+            }
+        else:
+            # Fallback to template-based generation
+            texts = get_descriptions(service_type, name_ru, name_uz, name_kr)
+
         duration = get_duration(service_type, name_ru)
         cat      = CATEGORY_MAP.get(service_type, CATEGORY_MAP["Диагностика"])
 
@@ -210,14 +267,14 @@ def build_ready_df(
             "Имя RU":                     name_ru,
             "Имя UZ":                     name_uz,
             "Имя KR":                     name_kr,
-            "Описание UZ":                clean_cell(texts["Описание UZ"]),
-            "Требования UZ":              clean_cell(texts["Требования UZ"]),
-            "Требования RU":              clean_cell(texts["Требования RU"]),
-            "Требования KR":              clean_cell(texts["Требования KR"]),
+            "Описание UZ":                clean_cell(texts.get("Описание UZ", "")),
+            "Требования UZ":              clean_cell(texts.get("Требования UZ", "")),
+            "Требования RU":              clean_cell(texts.get("Требования RU", "")),
+            "Требования KR":              clean_cell(texts.get("Требования KR", "")),
             "Тип услуг":                  service_type,
             "Цена":                       price,
-            "Описание RU":                clean_cell(texts["Описание RU"]),
-            "Описание KR":                clean_cell(texts["Описание KR"]),
+            "Описание RU":                clean_cell(texts.get("Описание RU", "")),
+            "Описание KR":                clean_cell(texts.get("Описание KR", "")),
             "Продолжительность (минут)":  str(duration),
             "Активен":                    "TRUE",
             "Категория RU":               cat["Категория RU"],
