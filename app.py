@@ -190,8 +190,9 @@ def _run_matching(services: list, catalog_df) -> list:
     return results
 
 
-def _make_ready(matched_rows: list, catalog_df) -> pd.DataFrame:
+def _make_ready(matched_rows: list, catalog_df, progress_callback=None) -> pd.DataFrame:
     from modules.exporter import _normalize_price
+    import os
     rows = []
     for r in matched_rows:
         r = dict(r)
@@ -202,11 +203,15 @@ def _make_ready(matched_rows: list, catalog_df) -> pd.DataFrame:
             if info:
                 r["Название в MedPay"] = info["Name RU"]
         rows.append(r)
+    # Get Gemini API key from environment (set in Streamlit secrets)
+    gemini_key = os.environ.get("GEMINI_API_KEY", "")
     return build_ready_df(
         rows,
         st.session_state["clinic_name"],
         st.session_state["district"],
         catalog_df,
+        gemini_api_key=gemini_key,
+        progress_callback=progress_callback,
     )
 
 
@@ -903,7 +908,20 @@ elif page == "work":
             if st.button("➡️ Сгенерировать файл", type="primary",
                          key="btn_gen", disabled=bool(val_errs)):
                 try:
-                    rdf = _make_ready(edited_m.to_dict("records"), cat_df)
+                    import os
+                    use_gemini = bool(os.environ.get("GEMINI_API_KEY", ""))
+                    if use_gemini:
+                        n_rows = len([r for r in edited_m.to_dict("records") if str(r.get("ID","-")) != "-"])
+                        n_batches = max(1, n_rows // 10)
+                        prog_bar = st.progress(0, text=f"🤖 Gemini: переводим {n_rows} услуг...")
+                        def _prog(done, total):
+                            prog_bar.progress(min(done/total, 1.0) if total > 0 else 1.0,
+                                              text=f"🤖 Gemini: {done}/{total} услуг...")
+                    else:
+                        _prog = None
+                    rdf = _make_ready(edited_m.to_dict("records"), cat_df, _prog)
+                    if use_gemini:
+                        prog_bar.empty()
                     st.session_state["matched"]   = edited_m.to_dict("records")
                     st.session_state["ready_df"]  = rdf
                     st.session_state["work_step"] = "done"
