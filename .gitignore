@@ -11,3 +11,11 @@ outputs/
 .env
 catalog_embeddings.npy
 model/
+catalog.faiss
+catalog_meta.json
+catalog_embeddings.npy
+medpay_model/catalog.faiss
+medpay_model/catalog_meta.json
+medpay_model/catalog_embeddings.npy
+medpay_model/model/model.safetensors
+medpay_model/model/tokenizer.json
