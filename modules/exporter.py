@@ -164,32 +164,9 @@ def build_ready_df(
     export_name    = _clinic_export_name(clinic_name, has_on_request)
     district       = _normalize_district(district.strip())
 
-    # ── Gemini translation (if API key provided) ──────────────────────────────
+    # Gemini translation disabled for now
     gemini_cache = {}
-    use_gemini   = bool(gemini_api_key and gemini_api_key.strip())
-
-    if use_gemini:
-        try:
-            from modules.gemini_translator import translate_services_batch
-            # Collect unique service names that have matched IDs
-            unique_svcs = []
-            seen = set()
-            for row in matched_rows:
-                sid  = clean_cell(str(row.get("ID", "-")))
-                name = clean_cell(str(row.get("Название в клинике", "")))
-                stype = clean_cell(str(row.get("Тип услуг", "Диагностика")))
-                if sid not in ("-", "") and name and name not in seen:
-                    unique_svcs.append({"name_ru": name, "type": stype})
-                    seen.add(name)
-            if unique_svcs:
-                gemini_cache = translate_services_batch(
-                    unique_svcs, gemini_api_key, progress_callback
-                )
-                print(f"[gemini] Translated {len(gemini_cache)} services")
-        except Exception as e:
-            print(f"[gemini] Translation failed: {e} — falling back to templates")
-            gemini_cache = {}
-            use_gemini   = False
+    use_gemini   = False
 
     records = []
 
