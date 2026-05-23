@@ -16,7 +16,7 @@ import re
 import time
 
 GEMINI_MODEL = "gemini-2.0-flash"
-BATCH_SIZE   = 10  # services per API call
+BATCH_SIZE   = 5   # reduced from 10 to avoid rate limits
 
 SYSTEM_PROMPT = """You are a medical content writer for MedPay, a healthcare platform in Uzbekistan.
 For each medical service, generate precise, specific content — NOT generic templates.
@@ -51,7 +51,7 @@ Rules:
 Return ONLY a valid JSON array. No markdown. No explanation."""
 
 
-def _call_gemini_batch(services: list, api_key: str) -> list:
+def _call_gemini_batch(services: list, api_key: str, retries: int = 3) -> list:
     import urllib.request, urllib.error
 
     services_text = "\n".join([
@@ -73,26 +73,35 @@ def _call_gemini_batch(services: list, api_key: str) -> list:
         "generationConfig": {"temperature": 0.15, "responseMimeType": "application/json"},
     }, ensure_ascii=False).encode("utf-8")
 
-    req = urllib.request.Request(
-        url, data=body,
-        headers={"Content-Type": "application/json"},
-        method="POST"
-    )
+    for attempt in range(retries):
+        req = urllib.request.Request(
+            url, data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST"
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                data   = json.loads(resp.read())
+                text   = data["candidates"][0]["content"]["parts"][0]["text"]
+                text   = re.sub(r"```json\s*|\s*```", "", text).strip()
+                result = json.loads(text)
+                if isinstance(result, list):
+                    while len(result) < len(services):
+                        result.append({})
+                    return result[:len(services)]
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                wait = 30 * (attempt + 1)  # 30s, 60s, 90s
+                print(f"[gemini] Rate limit (429), waiting {wait}s...")
+                time.sleep(wait)
+            else:
+                print(f"[gemini] HTTP {e.code}: {e.read().decode('utf-8','ignore')[:200]}")
+                break
+        except Exception as e:
+            print(f"[gemini] Error: {e}")
+            if attempt < retries - 1:
+                time.sleep(5)
 
-    try:
-        with urllib.request.urlopen(req, timeout=45) as resp:
-            data   = json.loads(resp.read())
-            text   = data["candidates"][0]["content"]["parts"][0]["text"]
-            text   = re.sub(r"```json\s*|\s*```", "", text).strip()
-            result = json.loads(text)
-            if isinstance(result, list):
-                while len(result) < len(services):
-                    result.append({})
-                return result[:len(services)]
-    except urllib.error.HTTPError as e:
-        print(f"[gemini] HTTP {e.code}: {e.read().decode('utf-8','ignore')[:200]}")
-    except Exception as e:
-        print(f"[gemini] Error: {e}")
     return []
 
 
@@ -125,6 +134,6 @@ def translate_services_batch(services: list, api_key: str, progress_callback=Non
             progress_callback(min(i + BATCH_SIZE, total), total)
 
         if i + BATCH_SIZE < total:
-            time.sleep(0.15)
+            time.sleep(1.0)  # 1 second between batches to avoid rate limits
 
     return results
