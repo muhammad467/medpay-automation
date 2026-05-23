@@ -225,8 +225,11 @@ def build_ready_df(
         # Override with Gemini translation if available
         gemini_data = gemini_cache.get(clinic_svc) if use_gemini else None
         if gemini_data:
-            if gemini_data.get("name_uz") and gemini_data["name_uz"] != "-":
-                name_uz = gemini_data["name_uz"]
+            gemini_uz = gemini_data.get("name_uz", "").strip()
+            if gemini_uz and gemini_uz not in ("-", "nan", ""):
+                name_uz = gemini_uz
+                # KR is always generated from UZ via transliteration
+                name_kr = uz_latin_to_cyrillic(name_uz)
 
         name_ru = clean_cell(name_ru)
         name_uz = clean_cell(name_uz)
