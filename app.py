@@ -354,6 +354,14 @@ with st.sidebar:
             ws = st.session_state.get("work_step", "")
             st.caption(f"Шаг: **{ws}**")
 
+        # Session timeout warning
+        if st.session_state.get("work_step") in ("review_match", "review_price", "match"):
+            st.warning(
+                "⚠️ **Важно:** Streamlit сбрасывает сессию при длительном бездействии. "
+                "Скачайте промежуточный файл матчинга (кнопка ⬇️ Скачать матчинг) "
+                "чтобы не потерять работу."
+            )
+
         st.divider()
 
         # Corrections history
