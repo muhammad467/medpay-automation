@@ -256,9 +256,10 @@ def build_ready_df(
             desc_uz = clean_cell(gemini_data.get("desc_uz", ""))
             req_ru  = clean_cell(gemini_data.get("req_ru",  ""))
             req_uz  = clean_cell(gemini_data.get("req_uz",  ""))
-            # Generate KR from UZ via transliteration
+            # Use Gemini req_kr if provided, otherwise transliterate
+            req_kr_raw = gemini_data.get("req_kr", "")
+            req_kr  = clean_cell(req_kr_raw) if req_kr_raw else clean_cell(uz_latin_to_cyrillic(req_uz))
             desc_kr = clean_cell(uz_latin_to_cyrillic(desc_uz)) if desc_uz else ""
-            req_kr  = clean_cell(uz_latin_to_cyrillic(req_uz))  if req_uz  else ""
             texts = {
                 "Описание RU":   desc_ru,
                 "Описание UZ":   desc_uz,
