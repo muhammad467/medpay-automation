@@ -1123,6 +1123,36 @@ def match_service(
         comment:         human-readable label
         top3_candidates: list of top-3 {service_id, name_ru, score, type}
     """
+    # ── Forced matches for known persistent wrong matches ────────────────────
+    # These override the model when specific patterns are detected
+    FORCED_MATCHES = {
+        # Allergens
+        'F262':      '1058114',  # баклажан IgE
+        'Eggplant':  '1058114',
+        'F303':      '1062116',  # палтус IgE
+        'Halibut':   '1062116',
+        # Immunogram
+        'ACCURI':    '700213',   # иммунограмма проточная цитофлуориметрия
+        # Фемофлор female
+        'Femoflor':  '1023134',  # микрофлора влагалища
+        'Фемофлор':  '1023134',
+    }
+    cn_upper = clinic_name.upper()
+    for pattern, forced_id in FORCED_MATCHES.items():
+        if pattern.upper() in cn_upper:
+            cat_row = catalog_df[catalog_df['ID number'] == forced_id]
+            if not cat_row.empty:
+                name = cat_row.iloc[0].get('Name RU', forced_id)
+                return {
+                    'matched_name':    name,
+                    'matched_id':      forced_id,
+                    'confidence':      95,
+                    'comment':         'Принудительное совпадение',
+                    'top3_candidates': [{'service_id': forced_id, 'name': name,
+                                         'score': 95, 'type': 'Анализы'}],
+                    'method':          'forced',
+                }
+
     if not clinic_name:
         return _no_match()
 
@@ -1130,7 +1160,7 @@ def match_service(
 
     # ── Path A: Fine-tuned embedding model ────────────────────────────────────
     if matcher.loaded:
-        candidates = matcher.search(clinic_name, k=3)
+        candidates = matcher.search(clinic_name, k=10)
 
         # Filter to allowed types
         candidates = [
@@ -1140,6 +1170,31 @@ def match_service(
 
         if not candidates:
             return _no_match()
+
+        # ── Contrast filter: if clinic name has NO contrast words,
+        # prefer non-contrast catalog entries ─────────────────────────────────
+        CONTRAST_WORDS = ["с контрастом", "с внутривенным", "болюсн",
+                          "с в/в", "with contrast", "c contrast",
+                          "внутривенное контрастирование"]
+        clinic_lower = clinic_name.lower()
+        clinic_has_contrast = any(w in clinic_lower for w in CONTRAST_WORDS)
+
+        if not clinic_has_contrast:
+            # Filter out contrast entries if non-contrast alternatives exist
+            CATALOG_CONTRAST = ["с внутривенным контрастированием",
+                                 "болюсное контрастирование",
+                                 "с контрастным усилением",
+                                 "с в/в контрастированием",
+                                 "с болюсным"]
+            non_contrast = [
+                c for c in candidates
+                if not any(w.lower() in (c.get("name_ru") or "").lower()
+                           for w in CATALOG_CONTRAST)
+            ]
+            if non_contrast:
+                candidates = non_contrast + [
+                    c for c in candidates if c not in non_contrast
+                ]
 
         best  = candidates[0]
         score = best["score"]
