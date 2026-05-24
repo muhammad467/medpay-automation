@@ -184,7 +184,9 @@ def build_ready_df(
                 gemini_cache = translate_services_batch(
                     unique_svcs, gemini_api_key, progress_callback
                 )
-                print(f"[gemini] Translated {len(gemini_cache)} services")
+                success = sum(1 for v in gemini_cache.values() if v is not None)
+                failed  = sum(1 for v in gemini_cache.values() if v is None)
+                print(f"[gemini] Translated {success} services, {failed} failed")
         except Exception as e:
             print(f"[gemini] Translation failed: {e} — falling back to templates")
             gemini_cache = {}
@@ -222,7 +224,17 @@ def build_ready_df(
                     name_kr = "-"
 
         # Override with Gemini translation if available
-        gemini_data = gemini_cache.get(clinic_svc) if use_gemini else None
+        # Try exact match first, then stripped version
+        gemini_data = None
+        if use_gemini:
+            gemini_data = gemini_cache.get(clinic_svc)
+            if gemini_data is None:
+                # Try with original uncleaned name
+                orig_name = str(row.get("Название в клинике", ""))
+                gemini_data = gemini_cache.get(orig_name)
+            if gemini_data is None:
+                # Try stripped version
+                gemini_data = gemini_cache.get(clinic_svc.strip())
         if gemini_data:
             gemini_uz = gemini_data.get("name_uz", "").strip()
             if gemini_uz and gemini_uz not in ("-", "nan", ""):
