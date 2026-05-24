@@ -37,8 +37,6 @@ Return array of exactly N objects."""
 
 
 def _call_gemini_batch(services: list, api_key: str, retries: int = 3) -> list:
-    import urllib.request, urllib.error
-
     services_text = "\n".join([
         f"{i+1}. [{s['type']}] {s['name_ru']}"
         for i, s in enumerate(services)
@@ -51,43 +49,36 @@ def _call_gemini_batch(services: list, api_key: str, retries: int = 3) -> list:
         f"Services:\n{services_text}"
     )
 
-    url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
-           f"{GEMINI_MODEL}:generateContent?key={api_key}")
-
-    body = json.dumps({
-        "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.1, "responseMimeType": "application/json"},
-    }, ensure_ascii=False).encode("utf-8")
-
     for attempt in range(retries):
-        req = urllib.request.Request(
-            url, data=body,
-            headers={"Content-Type": "application/json"},
-            method="POST"
-        )
         try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                data   = json.loads(resp.read())
-                text   = data["candidates"][0]["content"]["parts"][0]["text"]
-                text   = re.sub(r"```json\s*|\s*```", "", text).strip()
-                result = json.loads(text)
-                if isinstance(result, list):
-                    while len(result) < len(services):
-                        result.append({})
-                    return result[:len(services)]
-        except urllib.error.HTTPError as e:
-            if e.code == 429:
+            import google.generativeai as genai
+            genai.configure(api_key=api_key)
+            model = genai.GenerativeModel(
+                model_name=GEMINI_MODEL,
+                system_instruction=SYSTEM_PROMPT,
+                generation_config=genai.GenerationConfig(
+                    temperature=0.1,
+                    response_mime_type="application/json",
+                )
+            )
+            response = model.generate_content(prompt)
+            text = response.text
+            text = re.sub(r"```json\s*|\s*```", "", text).strip()
+            result = json.loads(text)
+            if isinstance(result, list):
+                while len(result) < len(services):
+                    result.append({})
+                return result[:len(services)]
+        except Exception as e:
+            err_str = str(e)
+            if "429" in err_str or "quota" in err_str.lower():
                 wait = 30 * (attempt + 1)
                 print(f"[gemini] Rate limit, waiting {wait}s...")
                 time.sleep(wait)
             else:
-                print(f"[gemini] HTTP {e.code}: {e.read().decode('utf-8','ignore')[:200]}")
-                break
-        except Exception as e:
-            print(f"[gemini] Error: {e}")
-            if attempt < retries - 1:
-                time.sleep(5)
+                print(f"[gemini] Error (attempt {attempt+1}): {err_str[:200]}")
+                if attempt < retries - 1:
+                    time.sleep(5)
     return []
 
 
