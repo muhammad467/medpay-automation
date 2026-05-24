@@ -6,6 +6,23 @@ def _detect_material(name_ru: str, name_uz: str = "") -> str:
     name_lower    = name_ru.lower()
     name_uz_lower = (name_uz or "").lower()
 
+    # ── Sperm must be checked FIRST — some hormone names (prolaktin, estradiol)
+    # also appear in sperm tests, and blood check would incorrectly catch them
+    if any(k in name_lower for k in ["эякул", "спермограмм", "сперм",
+                                      "семенная жидкость", "семенн"]) or \
+       any(k in name_uz_lower for k in ["ejakulyat", "sperma", "spermogramma"]):
+        return "sperm"
+
+    # ── Urine — check before blood to catch "мочевина" etc correctly
+    if any(k in name_lower for k in ["моча", "мочи", "мочу", "мочой", "моче",
+                                      "мочевин", "мочевой", "урин",
+                                      "анализ мочи", "исследование мочи",
+                                      "проба мочи", "цитология мочи", "посев мочи"]) or \
+       any(k in name_uz_lower for k in ["siydik", "siydikning", "siydikdagi",
+                                         "siydikdan", "siydik tahlil"]):
+        return "urine"
+
+    # ── Blood
     if any(k in name_lower for k in ["кровь", "кровн", "сыворотк", "плазм", "гематолог",
                                       "биохимия", "гормон", "антитела", "антитело",
                                       "серолог", "иммуноглоб", "иммунофер", "пцр крови",
@@ -16,19 +33,26 @@ def _detect_material(name_ru: str, name_uz: str = "") -> str:
                                       "эстрадиол", "прогестерон", "билирубин", "лейкоцит",
                                       "эритроцит", "тромбоцит", "гемоглобин"]):
         return "blood"
-    if any(k in name_lower for k in ["моча", "мочи", "мочу", "мочой", "моче", "мочевин", "мочевой", "урин",
-                                      "анализ мочи", "исследование мочи", "проба мочи",
-                                      "цитология мочи", "посев мочи"]) or \
-       any(k in name_uz_lower for k in ["siydik", "siydikning", "siydikdagi",
-                                         "siydikdan", "siydik tahlil"]):
-        return "urine"
+
+    # ── Stool
     if any(k in name_lower for k in ["кал", "кале", "кала", "калу", "копрограмм",
                                       "исследование кала", "яйца глист", "простейши",
                                       "гельминт", "дисбакт", "дисбиоз кишечника"]):
         return "stool"
+
+    # ── Smear
     if any(k in name_lower for k in ["мазок", "соскоб", "выделения", "секрет"]):
         return "smear"
-    # Detect by common test keywords that are usually blood-based
+
+    # ── Saliva
+    if any(k in name_lower for k in ["слюн", "ротовая полость", "буккальн"]):
+        return "saliva"
+
+    # ── Sputum
+    if any(k in name_lower for k in ["мокрот", "бронхоальвеол", "бал"]):
+        return "sputum"
+
+    # General blood-based tests
     if any(k in name_lower for k in ["igg", "igm", "ige", "iga", "анализ крови",
                                       "определение", "уровень", "концентрация",
                                       "активность", "исследование сыворотки"]):
@@ -118,6 +142,22 @@ def _analysis_templates(name_ru: str, name_uz: str, name_kr: str) -> dict:
         req_kr = (
             "Материал: веноз қон. Агар шифокор бошқача тавсия қилмаган бўлса, таҳлилни "
             "8–12 соат оч қоринга топшириш тавсия этилади."
+        )
+    elif material == "sperm":
+        req_ru = (
+            "Материал: эякулят. Воздержание от половой жизни 3–5 дней. "
+            "Сбор производится путём мастурбации в стерильный контейнер. "
+            "Доставить в лабораторию в течение 1 часа при температуре тела."
+        )
+        req_uz = (
+            "Material: ejakulyat. Jinsiy hayotdan 3–5 kun tiyilish tavsiya etiladi. "
+            "Namuna steril idishga masturbatsiya yo'li bilan yig'iladi. "
+            "1 soat ichida tana haroratida laboratoriyaga yetkazilsin."
+        )
+        req_kr = (
+            "Материал: эякулят. Жинсий ҳаётдан 3–5 кун тийилиш тавсия этилади. "
+            "Намуна стерил идишга мастурбация йўли билан йиғилади. "
+            "1 соат ичида тана ҳароратида лабораторияга етказилсин."
         )
     elif material == "urine":
         req_ru = (
