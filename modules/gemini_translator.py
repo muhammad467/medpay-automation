@@ -1,54 +1,39 @@
 """
 gemini_translator.py — Gemini 2.0 Flash for MedPay column generation
-Generates specific, high-quality medical descriptions and requirements,
-plus Uzbek Latin translations. Falls back gracefully if API unavailable.
-
-Columns generated:
-  Описание RU   — specific Russian description (2 sentences max)
-  Описание UZ   — Uzbek Latin translation of Описание RU
-  Требования RU — specific Russian requirements (specimen + preparation)
-  Требования UZ — Uzbek Latin translation of Требования RU
-  Имя UZ        — Uzbek Latin translation of clinic service name
+Generates specific, high-quality medical descriptions and requirements.
 """
-import os
-import json
-import re
-import time
+import json, re, time
 
 GEMINI_MODEL = "gemini-2.0-flash"
-BATCH_SIZE   = 5   # reduced from 10 to avoid rate limits
+BATCH_SIZE   = 5
 
-SYSTEM_PROMPT = """You are a medical content writer for MedPay, a healthcare platform in Uzbekistan.
-For each medical service, generate precise, specific content — NOT generic templates.
+SYSTEM_PROMPT = """You are writing short medical service descriptions for a healthcare marketplace in Uzbekistan.
 
-Rules:
-1. Описание RU: 1-2 sentences in Russian. Must be SPECIFIC to this exact test/procedure.
-   - What does it measure/show? What clinical purpose does it serve?
-   - NEVER start with the service name followed by a dash
-   - NEVER use: "помогает оценить соответствующий показатель организма"
-   - BAD: "Общий анализ крови — лабораторное исследование, которое помогает оценить соответствующий показатель..."
-   - GOOD for ОАК: "Исследование позволяет оценить клеточный состав крови — количество эритроцитов, лейкоцитов и тромбоцитов, уровень гемоглобина и лейкоцитарную формулу."
-   - GOOD for ТТГ: "Определяет уровень тиреотропного гормона гипофиза, регулирующего функцию щитовидной железы; используется для диагностики гипо- и гипертиреоза."
-   - GOOD for УЗИ брюшной: "Ультразвуковое исследование позволяет визуализировать органы брюшной полости — печень, желчный пузырь, поджелудочную железу, селезёнку и почки — для выявления структурных изменений."
+OUTPUT FORMAT: Return ONLY a JSON array. No markdown. No explanation.
 
-2. Описание UZ: Uzbek Latin translation of Описание RU. Natural medical Uzbek, not literal.
+For each service generate:
+- name_uz: Short Uzbek Latin translation of the service name (NOT transliteration, proper translation)
+- desc_ru: ONE sentence in Russian. State what this test/procedure reveals or measures. Be specific.
+- desc_uz: Uzbek Latin translation of desc_ru
+- req_ru: Requirements in Russian. Start with "Материал: [тип]." Then 1-2 specific preparation steps.
+- req_uz: Uzbek Latin translation of req_ru. Start with "Material: [turi]."
 
-3. Требования RU: Specific preparation in Russian.
-   - Always start with "Материал: [тип]."
-   - Correct specimens: венозная кровь / капиллярная кровь / моча / кал / мазок / слюна / мокрота / эякулят
-   - Include specific steps for THIS test
-   - GOOD ТТГ: "Материал: венозная кровь. Натощак 8-12 часов. Утром до приёма гормонов щитовидной железы."
-   - GOOD HbA1c: "Материал: венозная кровь. Специальной подготовки не требуется, можно сдавать в любое время."
-   - GOOD ОАМ: "Материал: моча. Утренняя средняя порция в стерильный контейнер после гигиены."
-   - GOOD УЗИ брюшной: "Натощак 4-6 часов. За 2-3 дня исключить газообразующие продукты."
+STRICT RULES:
+1. desc_ru must NEVER contain: "помогает оценить соответствующий показатель", "лабораторное исследование, которое"
+2. desc_ru must say WHAT the test measures and WHY it is done
+3. req_ru must specify the CORRECT material type: венозная кровь / моча / кал / мазок / эякулят / слюна
+4. Keep all text SHORT and PRACTICAL
 
-4. Требования UZ: Uzbek Latin translation of Требования RU. Start with "Material: [turi]."
+EXAMPLES OF GOOD OUTPUT:
+- ОАК → desc_ru: "Определяет количество эритроцитов, лейкоцитов, тромбоцитов и уровень гемоглобина для оценки общего состояния крови."
+- ТТГ → desc_ru: "Измеряет уровень тиреотропного гормона для диагностики заболеваний щитовидной железы."
+- УЗИ брюшной полости → desc_ru: "Визуализирует печень, желчный пузырь, поджелудочную железу и почки для выявления структурных изменений."
+- Аллерген арахис IgE → desc_ru: "Определяет уровень специфических IgE-антител к арахису для диагностики пищевой аллергии."
+- ОАМ → req_ru: "Материал: моча. Собрать утреннюю среднюю порцию в стерильный контейнер после гигиены."
+- ТТГ → req_ru: "Материал: венозная кровь. Натощак 8-12 часов, утром до приёма гормональных препаратов."
+- Спермограмма → req_ru: "Материал: эякулят. Воздержание 3-5 дней, сбор в стерильный контейнер."
 
-5. Имя UZ: Short natural Uzbek Latin name. Translate the clinic name properly.
-   - Keep abbreviations: MRT, UZI, EKG, KT
-   - GOOD: "Tireotrop gormon (TTG)", "Bosh miya MRT", "Umumiy qon tahlili"
-
-Return ONLY a valid JSON array. No markdown. No explanation."""
+Return array of exactly N objects."""
 
 
 def _call_gemini_batch(services: list, api_key: str, retries: int = 3) -> list:
@@ -59,10 +44,12 @@ def _call_gemini_batch(services: list, api_key: str, retries: int = 3) -> list:
         for i, s in enumerate(services)
     ])
 
-    prompt = (f"Generate medical content for these {len(services)} services.\n"
-              f"Return a JSON array with exactly {len(services)} objects.\n"
-              f'Each object: {{"name_uz":"...","desc_ru":"...","desc_uz":"...","req_ru":"...","req_uz":"..."}}\n\n'
-              f"Services:\n{services_text}")
+    prompt = (
+        f"Generate medical content for these {len(services)} services.\n"
+        f"Return JSON array with exactly {len(services)} objects.\n"
+        f'Each: {{"name_uz":"...","desc_ru":"...","desc_uz":"...","req_ru":"...","req_uz":"..."}}\n\n'
+        f"Services:\n{services_text}"
+    )
 
     url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
            f"{GEMINI_MODEL}:generateContent?key={api_key}")
@@ -70,7 +57,7 @@ def _call_gemini_batch(services: list, api_key: str, retries: int = 3) -> list:
     body = json.dumps({
         "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.15, "responseMimeType": "application/json"},
+        "generationConfig": {"temperature": 0.1, "responseMimeType": "application/json"},
     }, ensure_ascii=False).encode("utf-8")
 
     for attempt in range(retries):
@@ -91,8 +78,8 @@ def _call_gemini_batch(services: list, api_key: str, retries: int = 3) -> list:
                     return result[:len(services)]
         except urllib.error.HTTPError as e:
             if e.code == 429:
-                wait = 30 * (attempt + 1)  # 30s, 60s, 90s
-                print(f"[gemini] Rate limit (429), waiting {wait}s...")
+                wait = 30 * (attempt + 1)
+                print(f"[gemini] Rate limit, waiting {wait}s...")
                 time.sleep(wait)
             else:
                 print(f"[gemini] HTTP {e.code}: {e.read().decode('utf-8','ignore')[:200]}")
@@ -101,13 +88,12 @@ def _call_gemini_batch(services: list, api_key: str, retries: int = 3) -> list:
             print(f"[gemini] Error: {e}")
             if attempt < retries - 1:
                 time.sleep(5)
-
     return []
 
 
 def translate_services_batch(services: list, api_key: str, progress_callback=None) -> dict:
     """
-    Translate services in batches of 10 using Gemini 2.0 Flash.
+    Translate services in batches of 5 using Gemini 2.0 Flash.
     Returns dict: name_ru -> {name_uz, desc_ru, desc_uz, req_ru, req_uz} or None on failure.
     """
     results = {}
@@ -134,6 +120,6 @@ def translate_services_batch(services: list, api_key: str, progress_callback=Non
             progress_callback(min(i + BATCH_SIZE, total), total)
 
         if i + BATCH_SIZE < total:
-            time.sleep(1.0)  # 1 second between batches to avoid rate limits
+            time.sleep(1.0)
 
     return results
