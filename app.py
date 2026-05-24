@@ -103,20 +103,17 @@ def _fname() -> str:
 def normalize_service_type(raw: str) -> str:
     """
     Convert any variant of service type to standard Russian values.
-    Handles: Analysis, Diagnostics, tahlil, diagnostika,
-             1.Analysis, 2.Diagnostics, allergen codes (F25), (e1) etc.
-    Returns: "Анализы" or "Диагностика"
+    Returns: "Анализы", "Диагностика", or "Лечебная процедура"
     """
     if not raw:
         return "Диагностика"
     t = raw.lower().strip()
 
-    # Allergen codes pattern: (F25), (e1), (g4), (d1), (w8), (m2), (i1), (*k80) etc.
-    # These are always Анализы (specific IgE tests)
+    # Allergen codes pattern: (F25), (e1), (g4) etc → always Анализы
     if re.match(r'^\(\*?[a-zA-Z\d]', t):
         return "Анализы"
 
-    # Strip leading numbers/dots like "1.", "2.", "1) " etc.
+    # Strip leading numbers/dots
     t = re.sub(r'^[\d\s\.\)\-]+', '', t).strip()
 
     ANALYSIS_VARIANTS = {
@@ -129,16 +126,24 @@ def normalize_service_type(raw: str) -> str:
         "diagnostika", "diagnoz", "diagnosis", "диагноз",
         "imaging", "визуализация", "инструментальн",
     }
+    LECHEBNIYE_VARIANTS = {
+        "лечебная", "лечебн", "врачебн", "консультац", "процедур",
+        "услуги врача", "lechebniy", "врач", "прием врача",
+        "приём врача", "консультация", "лечение",
+    }
     for v in ANALYSIS_VARIANTS:
         if v in t:
             return "Анализы"
     for v in DIAGNOSTICS_VARIANTS:
         if v in t:
             return "Диагностика"
+    for v in LECHEBNIYE_VARIANTS:
+        if v in t:
+            return "Лечебная процедура"
     return "Диагностика"
 
 
-def _run_matching(services: list, catalog_df) -> list:
+def _run_matching(services: list, catalog_df, include_lech: bool = False) -> list:
     """Pure Python fuzzy match — zero st.* calls."""
     from rapidfuzz import fuzz as _fuzz
     from modules.exporter import _normalize_price
@@ -148,6 +153,10 @@ def _run_matching(services: list, catalog_df) -> list:
         nm       = clean_cell(svc.get("service_name", ""))
         price    = _normalize_price(svc.get("price", "По запросу"))
         svc_type = svc.get("type", "Диагностика")
+
+        # Skip Лечебная процедура if not selected
+        if svc_type == "Лечебная процедура" and not include_lech:
+            continue
         hit = match_service(nm, corpus, catalog_df)
         if hit["matched_id"] != "-":
             cat_r = catalog_df[catalog_df["ID number"] == hit["matched_id"]]
@@ -220,6 +229,24 @@ def _reset_clinic():
     for k in ("clinic_name", "district", "services", "matched",
               "match_summary", "ready_df", "work_step", "work_error"):
         st.session_state[k] = _DEFAULTS[k]
+
+
+def _save_correction(clinic_name: str, service_name: str,
+                     old_id: str, new_id: str, confidence: float):
+    """Save a user correction to corrections.csv for future retraining."""
+    import csv
+    from datetime import datetime
+    corrections_file = Path(__file__).parent / "corrections.csv"
+    file_exists = corrections_file.exists()
+    with open(corrections_file, "a", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        if not file_exists:
+            writer.writerow(["timestamp", "clinic", "service_name",
+                             "old_id", "new_id", "old_confidence"])
+        writer.writerow([
+            datetime.now().strftime("%Y-%m-%d %H:%M"),
+            clinic_name, service_name, old_id, new_id, confidence
+        ])
 
 
 def _transliterate_latin_to_russian(text: str) -> str:
@@ -326,6 +353,22 @@ with st.sidebar:
         if page_now == "work":
             ws = st.session_state.get("work_step", "")
             st.caption(f"Шаг: **{ws}**")
+
+        st.divider()
+
+        # Corrections history
+        corrections_file = Path(__file__).parent / "corrections.csv"
+        if corrections_file.exists():
+            try:
+                corr_df = pd.read_csv(corrections_file)
+                st.markdown(f"**📝 Исправлений:** {len(corr_df)}")
+                with st.expander("История"):
+                    st.dataframe(
+                        corr_df[["timestamp","service_name","old_id","new_id"]].tail(10),
+                        use_container_width=True, hide_index=True
+                    )
+            except Exception:
+                pass
 
         st.divider()
 
@@ -482,7 +525,30 @@ elif page == "setup":
 
         st.divider()
 
-        st.markdown("### 2 · Входные данные")
+        st.markdown("### 2 · Типы услуг")
+        t_col1, t_col2, t_info = st.columns([1, 1, 2])
+        with t_col1:
+            include_main = st.checkbox(
+                "🔬 Анализы + Диагностика",
+                value=True, key="include_main_types"
+            )
+        with t_col2:
+            include_lech = st.checkbox(
+                "👨‍⚕️ Врачебные услуги",
+                value=False, key="include_lech_types"
+            )
+        if not include_main and not include_lech:
+            st.warning("⚠️ Выберите хотя бы один тип услуг.")
+        with t_info:
+            selected = []
+            if include_main: selected.append("Анализы, Диагностика")
+            if include_lech: selected.append("Врачебные услуги")
+            if selected:
+                st.info(f"Будут обработаны: **{' + '.join(selected)}**")
+
+        st.divider()
+
+        st.markdown("### 3 · Входные данные")
         entry_opts = ["A", "B", "C"] if mode == "manual" else ["A", "B", "C", "D"]
         e_col, e_info = st.columns([1, 2])
         with e_col:
@@ -496,7 +562,7 @@ elif page == "setup":
 
         st.divider()
 
-        st.markdown("### 3 · Файл клиники")
+        st.markdown("### 4 · Файл клиники")
         if entry in ("A", "D"):
             ft, fl = ["html", "htm"], "HTML-страница прайс-листа (.html)"
         elif entry == "B":
@@ -546,7 +612,7 @@ elif page == "setup":
                         )
                     elif mode == "auto" or entry == "D":
                         with st.spinner(f"Матчинг {len(svcs)} услуг (~30–60 с)..."):
-                            matched = _run_matching(svcs, cat_df)
+                            matched = _run_matching(svcs, cat_df, include_lech=st.session_state.get("include_lech_types", False))
                         n_ok  = sum(1 for r in matched if r["ID"] != "-")
                         n_no  = len(matched) - n_ok
                         n_low = sum(1 for r in matched
@@ -575,7 +641,7 @@ elif page == "setup":
                         st.session_state["work_error"] = "Услуги не найдены в прайс-листе."
                     elif mode == "auto":
                         with st.spinner(f"Матчинг {len(svcs)} услуг (~30–60 с)..."):
-                            matched = _run_matching(svcs, cat_df)
+                            matched = _run_matching(svcs, cat_df, include_lech=st.session_state.get("include_lech_types", False))
                         n_ok  = sum(1 for r in matched if r["ID"] != "-")
                         n_no  = len(matched) - n_ok
                         n_low = sum(1 for r in matched
@@ -664,23 +730,24 @@ elif page == "work":
         svcs = st.session_state["services"]
         n_ana   = sum(1 for s in svcs if s["type"] == "Анализы")
         n_dia   = sum(1 for s in svcs if s["type"] == "Диагностика")
-        n_other = len(svcs) - n_ana - n_dia
+        n_lech  = sum(1 for s in svcs if s["type"] == "Лечебная процедура")
+        n_other = len(svcs) - n_ana - n_dia - n_lech
 
         st.markdown(f"### 📋 Прайс-лист · {clinic_nm} / {district}")
         st.caption(
-            f"**{len(svcs)}** услуг (Анализы: {n_ana}, Диагностика: {n_dia}). "
-            "Проверьте, отредактируйте при необходимости, затем нажмите «Далее»."
+            f"**{len(svcs)}** услуг (Анализы: {n_ana}, Диагностика: {n_dia}"
+            + (f", Врачебные: {n_lech}" if n_lech > 0 else "")
+            + "). Проверьте, отредактируйте при необходимости, затем нажмите «Далее»."
         )
 
-        other_svcs = [s for s in svcs if s["type"] not in ("Анализы", "Диагностика")]
+        other_svcs = [s for s in svcs if s["type"] not in ("Анализы", "Диагностика", "Лечебная процедура")]
         if other_svcs:
             with st.expander(
                 f"⚠️ Найдено {len(other_svcs)} услуг с нестандартным типом — нажмите чтобы посмотреть",
                 expanded=True
             ):
                 st.warning(
-                    "Следующие услуги имеют тип, отличный от «Анализы» и «Диагностика» "
-                    "(например: Врачебные услуги, Лечебные процедуры, Консультации и т.д.). "
+                    "Следующие услуги имеют нераспознанный тип. "
                     "Они **не будут включены** в итоговый файл. "
                     "Вы можете изменить тип вручную в таблице ниже."
                 )
@@ -760,7 +827,7 @@ elif page == "work":
 
         if run_btn:
             with st.spinner(f"Матчинг {len(svcs)} услуг (~30–60 с)..."):
-                matched = _run_matching(svcs, cat_df)
+                matched = _run_matching(svcs, cat_df, include_lech=st.session_state.get("include_lech_types", False))
             n_ok  = sum(1 for r in matched if r["ID"] != "-")
             n_no  = len(matched) - n_ok
             n_low = sum(1 for r in matched
@@ -840,6 +907,8 @@ elif page == "work":
                                 st.caption(cname)
                                 if st.button("Применить", key=f"pick_{ridx}_{ci}"):
                                     clinic_nm_svc = row.get("Название в клинике","")
+                                    old_id = str(row.get("ID", "-"))
+                                    old_conf = float(row.get("Уверенность", 0) or 0)
                                     for mr in matched:
                                         if mr.get("Название в клинике","") == clinic_nm_svc:
                                             mr["Название в MedPay"] = cname
@@ -847,6 +916,12 @@ elif page == "work":
                                             mr["Уверенность"]      = int(cscore)
                                             mr["Комментарий"]      = f"Выбрано вручную ({cscore:.0f}%)"
                                             break
+                                    # Save correction for retraining
+                                    if old_id != csid:
+                                        _save_correction(
+                                            st.session_state.get("clinic_name", ""),
+                                            clinic_nm_svc, old_id, csid, old_conf
+                                        )
                                     st.session_state["matched"] = matched
                                     st.rerun()
                     else:
