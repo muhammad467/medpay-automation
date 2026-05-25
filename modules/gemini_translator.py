@@ -4,7 +4,7 @@ Generates patient-friendly descriptions and proper requirements.
 """
 import json, re, time
 
-GEMINI_MODEL = "gemini-2.0-flash"
+GEMINI_MODEL = "gemini-2.5-flash-preview-05-20"
 BATCH_SIZE   = 5
 
 SYSTEM_PROMPT = """You are a Senior Medical Data Entry and Localization Specialist for MedPay, a healthcare marketplace in Uzbekistan.
