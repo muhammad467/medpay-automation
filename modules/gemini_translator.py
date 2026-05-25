@@ -65,17 +65,18 @@ def _call_gemini_batch(services: list, api_key: str, retries: int = 3) -> list:
 
     for attempt in range(retries):
         try:
-            import google.generativeai as genai
-            genai.configure(api_key=api_key)
-            model = genai.GenerativeModel(
-                model_name=GEMINI_MODEL,
-                system_instruction=SYSTEM_PROMPT,
-                generation_config=genai.GenerationConfig(
+            from google import genai
+            from google.genai import types
+            client = genai.Client(api_key=api_key)
+            response = client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_PROMPT,
                     temperature=0.1,
                     response_mime_type="application/json",
                 )
             )
-            response = model.generate_content(prompt)
             text = response.text
             text = re.sub(r"```json\s*|\s*```", "", text).strip()
             result = json.loads(text)
