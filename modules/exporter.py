@@ -18,8 +18,7 @@ Price rule:
 
 Description lookup priority:
 - 1) descriptions_catalog.json by service ID (pre-generated)
-- 2) Gemini API (if key provided and credits available)
-- 3) Template fallback (modules/templates.py)
+- 2) Template fallback (modules/templates.py)
 """
 import io
 import json
@@ -96,7 +95,7 @@ def _load_desc_catalog() -> dict:
                 return data
             except Exception as e:
                 print(f"[desc_catalog] Failed to load {path}: {e}")
-    print("[desc_catalog] Not found — will use Gemini/templates fallback")
+    print("[desc_catalog] Not found — will use templates fallback")
     return {}
 
 
@@ -180,8 +179,6 @@ def build_ready_df(
     clinic_name: str,
     district: str,
     catalog_df: pd.DataFrame,
-    gemini_api_key: str = "",
-    progress_callback=None,
 ) -> pd.DataFrame:
     """Build final ready DataFrame with all 22 columns."""
 
@@ -195,34 +192,6 @@ def build_ready_df(
     has_on_request = _has_on_request_price(matched_rows)
     export_name    = _clinic_export_name(clinic_name, has_on_request)
     district       = _normalize_district(district.strip())
-
-    # ── Gemini translation (if API key provided) ──────────────────────────────
-    gemini_cache = {}
-    use_gemini   = bool(gemini_api_key and gemini_api_key.strip())
-
-    if use_gemini:
-        try:
-            from modules.gemini_translator import translate_services_batch
-            unique_svcs = []
-            seen = set()
-            for row in matched_rows:
-                sid   = clean_cell(str(row.get("ID", "-")))
-                name  = clean_cell(str(row.get("Название в клинике", "")))
-                stype = clean_cell(str(row.get("Тип услуг", "Диагностика")))
-                if sid not in ("-", "") and name and name not in seen:
-                    unique_svcs.append({"name_ru": name, "type": stype})
-                    seen.add(name)
-            if unique_svcs:
-                gemini_cache = translate_services_batch(
-                    unique_svcs, gemini_api_key, progress_callback
-                )
-                success = sum(1 for v in gemini_cache.values() if v is not None)
-                failed  = sum(1 for v in gemini_cache.values() if v is None)
-                print(f"[gemini] Translated {success} services, {failed} failed")
-        except Exception as e:
-            print(f"[gemini] Translation failed: {e} — falling back to catalog/templates")
-            gemini_cache = {}
-            use_gemini   = False
 
     records = []
 
@@ -255,22 +224,6 @@ def build_ready_df(
                 else:
                     name_kr = "-"
 
-        # Override with Gemini translation if available
-        gemini_data = None
-        if use_gemini:
-            gemini_data = gemini_cache.get(clinic_svc)
-            if gemini_data is None:
-                orig_name = str(row.get("Название в клинике", ""))
-                gemini_data = gemini_cache.get(orig_name)
-            if gemini_data is None:
-                gemini_data = gemini_cache.get(clinic_svc.strip())
-
-        if gemini_data:
-            gemini_uz = gemini_data.get("name_uz", "").strip()
-            if gemini_uz and gemini_uz not in ("-", "nan", ""):
-                name_uz = gemini_uz
-                name_kr = uz_latin_to_cyrillic(name_uz)
-
         name_ru = clean_cell(name_ru)
         name_uz = clean_cell(name_uz)
 
@@ -280,9 +233,8 @@ def build_ready_df(
 
         # ── Descriptions and requirements ─────────────────────────────────────
         # Priority:
-        #   1) descriptions_catalog.json lookup by service ID (pre-generated, fastest)
-        #   2) Gemini API (if key provided and credits available)
-        #   3) Template fallback (modules/templates.py)
+        #   1) descriptions_catalog.json lookup by service ID (pre-generated)
+        #   2) Template fallback (modules/templates.py)
 
         catalog_entry = desc_catalog.get(str(service_id), {})
 
@@ -295,7 +247,7 @@ def build_ready_df(
             req_uz  = clean_cell(catalog_entry.get("req_uz", ""))
             req_kr  = clean_cell(uz_latin_to_cyrillic(req_uz)) if req_uz else ""
 
-            # Fill desc_kr if missing (transliterate from desc_uz)
+            # Fill desc_kr if missing
             if not desc_kr and desc_uz:
                 desc_kr = clean_cell(uz_latin_to_cyrillic(desc_uz))
 
@@ -308,26 +260,8 @@ def build_ready_df(
                 "Требования KR": req_kr,
             }
 
-        elif gemini_data:
-            # ── Source 2: Gemini API ──────────────────────────────────────────
-            desc_ru    = clean_cell(gemini_data.get("desc_ru", ""))
-            desc_uz    = clean_cell(gemini_data.get("desc_uz", ""))
-            req_ru     = clean_cell(gemini_data.get("req_ru",  ""))
-            req_uz     = clean_cell(gemini_data.get("req_uz",  ""))
-            req_kr_raw = gemini_data.get("req_kr", "")
-            req_kr     = clean_cell(req_kr_raw) if req_kr_raw else clean_cell(uz_latin_to_cyrillic(req_uz))
-            desc_kr    = clean_cell(uz_latin_to_cyrillic(desc_uz)) if desc_uz else ""
-            texts = {
-                "Описание RU":   desc_ru,
-                "Описание UZ":   desc_uz,
-                "Описание KR":   desc_kr,
-                "Требования RU": req_ru,
-                "Требования UZ": req_uz,
-                "Требования KR": req_kr,
-            }
-
         else:
-            # ── Source 3: Template fallback ───────────────────────────────────
+            # ── Source 2: Template fallback ───────────────────────────────────
             texts = get_descriptions(service_type, name_ru, name_uz, name_kr)
 
         duration = get_duration(service_type, name_ru)
