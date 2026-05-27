@@ -85,8 +85,16 @@ DESC_CATALOG_PATHS = [
 
 
 def _load_desc_catalog() -> dict:
-    """Load pre-generated descriptions catalog. Returns empty dict if not found."""
-    for path in DESC_CATALOG_PATHS:
+    """Load pre-generated descriptions catalog from HuggingFace or local fallback."""
+    import requests
+
+    # Try local paths first (Colab / local dev)
+    local_paths = [
+        "/content/drive/MyDrive/Medpay Automation/descriptions_catalog.json",
+        "descriptions_catalog.json",
+        "data/descriptions_catalog.json",
+    ]
+    for path in local_paths:
         if os.path.exists(path):
             try:
                 with open(path, "r", encoding="utf-8") as f:
@@ -95,7 +103,29 @@ def _load_desc_catalog() -> dict:
                 return data
             except Exception as e:
                 print(f"[desc_catalog] Failed to load {path}: {e}")
-    print("[desc_catalog] Not found — will use templates fallback")
+
+    # Download from HuggingFace
+    hf_token = os.environ.get("HF_TOKEN", "")
+    hf_url = "https://huggingface.co/admin11011/medpay-matcher/resolve/main/descriptions_catalog.json"
+    try:
+        print("[desc_catalog] Downloading from HuggingFace...")
+        headers = {"Authorization": f"Bearer {hf_token}"} if hf_token else {}
+        resp = requests.get(hf_url, headers=headers, timeout=60)
+        resp.raise_for_status()
+        data = resp.json()
+        print(f"[desc_catalog] Downloaded {len(data)} entries from HuggingFace")
+        # Cache locally for faster reloads
+        try:
+            with open("descriptions_catalog.json", "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False)
+            print("[desc_catalog] Cached locally as descriptions_catalog.json")
+        except Exception:
+            pass
+        return data
+    except Exception as e:
+        print(f"[desc_catalog] HuggingFace download failed: {e}")
+
+    print("[desc_catalog] All sources failed — using template fallback")
     return {}
 
 
