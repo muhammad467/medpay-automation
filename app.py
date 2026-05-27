@@ -17,6 +17,7 @@ Pages   : catalog  →  setup  →  work  →  (done)
           At any point the user can start a new clinic or swap the catalog.
 """
 import io
+import os
 import re
 from pathlib import Path
 import pandas as pd
