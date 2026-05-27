@@ -15,8 +15,15 @@ Price rule:
 - If any service has 9999999 price → clinic name gets * suffix (e.g. "Green Lukas*")
 - * suffix means unsigned clinic with no real pricing
 - Rows with ID == "-" are excluded from ready file
+
+Description lookup priority:
+- 1) descriptions_catalog.json by service ID (pre-generated)
+- 2) Gemini API (if key provided and credits available)
+- 3) Template fallback (modules/templates.py)
 """
 import io
+import json
+import os
 import re
 import pandas as pd
 import openpyxl
@@ -69,6 +76,28 @@ WIDE_COLS_MAX = 55
 # Price sentinel
 PRICE_ON_REQUEST_SENTINEL = "9999999"
 PRICE_ON_REQUEST_LABELS   = {"цена по запросу", "по запросу", "price on request"}
+
+# Paths to search for descriptions_catalog.json
+DESC_CATALOG_PATHS = [
+    "/content/drive/MyDrive/Medpay Automation/descriptions_catalog.json",
+    "descriptions_catalog.json",
+    "data/descriptions_catalog.json",
+]
+
+
+def _load_desc_catalog() -> dict:
+    """Load pre-generated descriptions catalog. Returns empty dict if not found."""
+    for path in DESC_CATALOG_PATHS:
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                print(f"[desc_catalog] Loaded {len(data)} entries from {path}")
+                return data
+            except Exception as e:
+                print(f"[desc_catalog] Failed to load {path}: {e}")
+    print("[desc_catalog] Not found — will use Gemini/templates fallback")
+    return {}
 
 
 def _normalize_price(price) -> str:
@@ -156,6 +185,9 @@ def build_ready_df(
 ) -> pd.DataFrame:
     """Build final ready DataFrame with all 22 columns."""
 
+    # ── Load descriptions catalog (pre-generated JSON) ────────────────────────
+    desc_catalog = _load_desc_catalog()
+
     # Normalize all prices first
     for row in matched_rows:
         row["Цена"] = _normalize_price(row.get("Цена", ""))
@@ -188,7 +220,7 @@ def build_ready_df(
                 failed  = sum(1 for v in gemini_cache.values() if v is None)
                 print(f"[gemini] Translated {success} services, {failed} failed")
         except Exception as e:
-            print(f"[gemini] Translation failed: {e} — falling back to templates")
+            print(f"[gemini] Translation failed: {e} — falling back to catalog/templates")
             gemini_cache = {}
             use_gemini   = False
 
@@ -224,22 +256,19 @@ def build_ready_df(
                     name_kr = "-"
 
         # Override with Gemini translation if available
-        # Try exact match first, then stripped version
         gemini_data = None
         if use_gemini:
             gemini_data = gemini_cache.get(clinic_svc)
             if gemini_data is None:
-                # Try with original uncleaned name
                 orig_name = str(row.get("Название в клинике", ""))
                 gemini_data = gemini_cache.get(orig_name)
             if gemini_data is None:
-                # Try stripped version
                 gemini_data = gemini_cache.get(clinic_svc.strip())
+
         if gemini_data:
             gemini_uz = gemini_data.get("name_uz", "").strip()
             if gemini_uz and gemini_uz not in ("-", "nan", ""):
                 name_uz = gemini_uz
-                # KR is always generated from UZ via transliteration
                 name_kr = uz_latin_to_cyrillic(name_uz)
 
         name_ru = clean_cell(name_ru)
@@ -250,16 +279,26 @@ def build_ready_df(
         name_kr = clean_cell(name_kr)
 
         # ── Descriptions and requirements ─────────────────────────────────────
-        if gemini_data:
-            # Use Gemini-generated content
-            desc_ru = clean_cell(gemini_data.get("desc_ru", ""))
-            desc_uz = clean_cell(gemini_data.get("desc_uz", ""))
-            req_ru  = clean_cell(gemini_data.get("req_ru",  ""))
-            req_uz  = clean_cell(gemini_data.get("req_uz",  ""))
-            # Use Gemini req_kr if provided, otherwise transliterate
-            req_kr_raw = gemini_data.get("req_kr", "")
-            req_kr  = clean_cell(req_kr_raw) if req_kr_raw else clean_cell(uz_latin_to_cyrillic(req_uz))
-            desc_kr = clean_cell(uz_latin_to_cyrillic(desc_uz)) if desc_uz else ""
+        # Priority:
+        #   1) descriptions_catalog.json lookup by service ID (pre-generated, fastest)
+        #   2) Gemini API (if key provided and credits available)
+        #   3) Template fallback (modules/templates.py)
+
+        catalog_entry = desc_catalog.get(str(service_id), {})
+
+        if catalog_entry and catalog_entry.get("desc_ru", "").strip():
+            # ── Source 1: Pre-generated catalog ──────────────────────────────
+            desc_ru = clean_cell(catalog_entry.get("desc_ru", ""))
+            desc_uz = clean_cell(catalog_entry.get("desc_uz", ""))
+            desc_kr = clean_cell(catalog_entry.get("desc_kr", ""))
+            req_ru  = clean_cell(catalog_entry.get("req_ru", ""))
+            req_uz  = clean_cell(catalog_entry.get("req_uz", ""))
+            req_kr  = clean_cell(uz_latin_to_cyrillic(req_uz)) if req_uz else ""
+
+            # Fill desc_kr if missing (transliterate from desc_uz)
+            if not desc_kr and desc_uz:
+                desc_kr = clean_cell(uz_latin_to_cyrillic(desc_uz))
+
             texts = {
                 "Описание RU":   desc_ru,
                 "Описание UZ":   desc_uz,
@@ -268,8 +307,27 @@ def build_ready_df(
                 "Требования UZ": req_uz,
                 "Требования KR": req_kr,
             }
+
+        elif gemini_data:
+            # ── Source 2: Gemini API ──────────────────────────────────────────
+            desc_ru    = clean_cell(gemini_data.get("desc_ru", ""))
+            desc_uz    = clean_cell(gemini_data.get("desc_uz", ""))
+            req_ru     = clean_cell(gemini_data.get("req_ru",  ""))
+            req_uz     = clean_cell(gemini_data.get("req_uz",  ""))
+            req_kr_raw = gemini_data.get("req_kr", "")
+            req_kr     = clean_cell(req_kr_raw) if req_kr_raw else clean_cell(uz_latin_to_cyrillic(req_uz))
+            desc_kr    = clean_cell(uz_latin_to_cyrillic(desc_uz)) if desc_uz else ""
+            texts = {
+                "Описание RU":   desc_ru,
+                "Описание UZ":   desc_uz,
+                "Описание KR":   desc_kr,
+                "Требования RU": req_ru,
+                "Требования UZ": req_uz,
+                "Требования KR": req_kr,
+            }
+
         else:
-            # Fallback to template-based generation
+            # ── Source 3: Template fallback ───────────────────────────────────
             texts = get_descriptions(service_type, name_ru, name_uz, name_kr)
 
         duration = get_duration(service_type, name_ru)
@@ -390,7 +448,6 @@ def export_ready_excel(
     wb  = openpyxl.Workbook()
     ws  = wb.active
 
-    # Sheet name strips * (not allowed in Excel sheet names)
     clean_cn   = clinic_name.strip().rstrip("*").strip()
     sheet_name = _make_sheet_name(clean_cn, district) + "_ready"
     ws.title   = sheet_name[:31]
