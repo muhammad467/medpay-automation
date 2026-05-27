@@ -24,6 +24,7 @@ import io
 import json
 import os
 import re
+import requests
 import pandas as pd
 import openpyxl
 from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
@@ -76,18 +77,9 @@ WIDE_COLS_MAX = 55
 PRICE_ON_REQUEST_SENTINEL = "9999999"
 PRICE_ON_REQUEST_LABELS   = {"цена по запросу", "по запросу", "price on request"}
 
-# Paths to search for descriptions_catalog.json
-DESC_CATALOG_PATHS = [
-    "/content/drive/MyDrive/Medpay Automation/descriptions_catalog.json",
-    "descriptions_catalog.json",
-    "data/descriptions_catalog.json",
-]
-
 
 def _load_desc_catalog() -> dict:
     """Load pre-generated descriptions catalog from HuggingFace or local fallback."""
-    import requests
-
     # Try local paths first (Colab / local dev)
     local_paths = [
         "/content/drive/MyDrive/Medpay Automation/descriptions_catalog.json",
@@ -110,7 +102,7 @@ def _load_desc_catalog() -> dict:
     try:
         print("[desc_catalog] Downloading from HuggingFace...")
         headers = {"Authorization": f"Bearer {hf_token}"} if hf_token else {}
-        resp = requests.get(hf_url, headers=headers, timeout=60)
+        resp = requests.get(hf_url, headers=headers, timeout=120)
         resp.raise_for_status()
         data = resp.json()
         print(f"[desc_catalog] Downloaded {len(data)} entries from HuggingFace")
@@ -130,11 +122,6 @@ def _load_desc_catalog() -> dict:
 
 
 def _normalize_price(price) -> str:
-    """
-    Convert "Цена по запросу" (and variants) → "9999999".
-    Already "9999999" → stays "9999999".
-    Everything else → as-is string.
-    """
     val = str(price).strip()
     if val.lower() in PRICE_ON_REQUEST_LABELS or val == PRICE_ON_REQUEST_SENTINEL:
         return PRICE_ON_REQUEST_SENTINEL
@@ -142,7 +129,6 @@ def _normalize_price(price) -> str:
 
 
 def _has_on_request_price(rows: list[dict]) -> bool:
-    """Return True if any row has a 9999999 price (after normalization)."""
     for row in rows:
         if _normalize_price(row.get("Цена", "")) == PRICE_ON_REQUEST_SENTINEL:
             return True
@@ -150,11 +136,6 @@ def _has_on_request_price(rows: list[dict]) -> bool:
 
 
 def _clinic_export_name(clinic_name: str, has_on_request: bool) -> str:
-    """
-    Build the clinic name for export.
-    If has_on_request → append * with no space: "Green Lukas*"
-    Strip any existing * first to avoid doubling.
-    """
     name = clean_cell(clinic_name.strip().rstrip("*").strip())
     if has_on_request:
         return name + "*"
@@ -162,7 +143,6 @@ def _clinic_export_name(clinic_name: str, has_on_request: bool) -> str:
 
 
 def _make_sheet_name(clinic_name: str, district: str) -> str:
-    """Generate Excel sheet name from clinic + district. Max 31 chars."""
     clean_cn = clinic_name.rstrip("*").strip()
     base = f"{clean_cell(clean_cn)}_{clean_cell(district)}"
     safe = re.sub(r"[\\/*?\[\]:]", "_", base)
@@ -170,7 +150,6 @@ def _make_sheet_name(clinic_name: str, district: str) -> str:
 
 
 def _calc_col_width(ws, col_idx: int, col_name: str, max_rows: int = 100) -> float:
-    """Calculate column width based on content in first max_rows rows."""
     max_len = len(col_name)
     for row in range(2, min(ws.max_row + 1, max_rows + 2)):
         val = ws.cell(row=row, column=col_idx).value
@@ -181,27 +160,20 @@ def _calc_col_width(ws, col_idx: int, col_name: str, max_rows: int = 100) -> flo
                 len(text) // 3
             ))
             max_len = max(max_len, effective)
-
     if col_name in WIDE_COLS:
         return max(WIDE_COLS_MIN, min(WIDE_COLS_MAX, max_len + 4))
     return max(COL_MIN_WIDTH, min(COL_MAX_WIDTH, max_len + 4))
 
 
 def _apply_cell_style(cell, is_header: bool = False, col_name: str = ""):
-    """Apply standard cell formatting."""
     cell.font = Font(name="Arial", size=10, bold=is_header)
     cell.fill = WHITE_FILL
     cell.border = THIN_BORDER
-
     if is_header:
-        cell.alignment = Alignment(
-            horizontal="center", vertical="center", wrap_text=True
-        )
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
     else:
         h_align = "center" if col_name in CENTER_COLS else "left"
-        cell.alignment = Alignment(
-            horizontal=h_align, vertical="center", wrap_text=True
-        )
+        cell.alignment = Alignment(horizontal=h_align, vertical="center", wrap_text=True)
 
 
 def build_ready_df(
@@ -211,13 +183,15 @@ def build_ready_df(
     catalog_df: pd.DataFrame,
 ) -> pd.DataFrame:
     """Build final ready DataFrame with all 22 columns."""
-    print(f"[DEBUG] desc_catalog entries: {len(desc_catalog)}")
-    # ── Load descriptions catalog (pre-generated JSON) ────────────────────────
+
+    # ── Load descriptions catalog ─────────────────────────────────────────────
     try:
         desc_catalog = _load_desc_catalog()
     except Exception as e:
         print(f"[desc_catalog] Load error: {e}")
         desc_catalog = {}
+    print(f"[desc_catalog] Entries loaded: {len(desc_catalog)}")
+
     # Normalize all prices first
     for row in matched_rows:
         row["Цена"] = _normalize_price(row.get("Цена", ""))
@@ -229,7 +203,7 @@ def build_ready_df(
     records = []
 
     for row in matched_rows:
-        service_id   = clean_cell(str(row.get("ID", "-")))
+        service_id = clean_cell(str(row.get("ID", "-")))
         if service_id in ("-", ""):
             continue
 
@@ -239,6 +213,9 @@ def build_ready_df(
 
         if service_type not in ("Диагностика", "Анализы"):
             service_type = "Диагностика"
+
+        # ── Catalog entry lookup (used for names AND descriptions) ────────────
+        catalog_entry = desc_catalog.get(str(service_id), {})
 
         name_ru, name_uz, name_kr = clinic_svc, "-", "-"
 
@@ -251,11 +228,13 @@ def build_ready_df(
                 if cat_uz and len(cat_uz) > 2 and (cat_uz[0].isupper() or cat_uz[0].isdigit()):
                     name_uz = cat_uz
                 else:
-                    name_uz = "-"
+                    # Fallback to descriptions_catalog name_uz
+                    name_uz = catalog_entry.get("name_uz", "-") or "-"
                 if cat_kr and len(cat_kr) > 2 and (cat_kr[0].isupper() or cat_kr[0].isdigit()):
                     name_kr = cat_kr
                 else:
-                    name_kr = "-"
+                    # Fallback to descriptions_catalog name_kr
+                    name_kr = catalog_entry.get("name_kr", "-") or "-"
 
         name_ru = clean_cell(name_ru)
         name_uz = clean_cell(name_uz)
@@ -265,14 +244,9 @@ def build_ready_df(
         name_kr = clean_cell(name_kr)
 
         # ── Descriptions and requirements ─────────────────────────────────────
-        # Priority:
-        #   1) descriptions_catalog.json lookup by service ID (pre-generated)
-        #   2) Template fallback (modules/templates.py)
-
-        catalog_entry = desc_catalog.get(str(service_id), {})
+        # Priority: 1) descriptions_catalog.json  2) Template fallback
 
         if catalog_entry and catalog_entry.get("desc_ru", "").strip():
-            # ── Source 1: Pre-generated catalog ──────────────────────────────
             desc_ru = clean_cell(catalog_entry.get("desc_ru", ""))
             desc_uz = clean_cell(catalog_entry.get("desc_uz", ""))
             desc_kr = clean_cell(catalog_entry.get("desc_kr", ""))
@@ -280,7 +254,6 @@ def build_ready_df(
             req_uz  = clean_cell(catalog_entry.get("req_uz", ""))
             req_kr  = clean_cell(uz_latin_to_cyrillic(req_uz)) if req_uz else ""
 
-            # Fill desc_kr if missing
             if not desc_kr and desc_uz:
                 desc_kr = clean_cell(uz_latin_to_cyrillic(desc_uz))
 
@@ -292,9 +265,7 @@ def build_ready_df(
                 "Требования UZ": req_uz,
                 "Требования KR": req_kr,
             }
-
         else:
-            # ── Source 2: Template fallback ───────────────────────────────────
             texts = get_descriptions(service_type, name_ru, name_uz, name_kr)
 
         duration = get_duration(service_type, name_ru)
@@ -331,7 +302,6 @@ def build_ready_df(
 def export_price_list_excel(
     services: list[dict], clinic_name: str, district: str
 ) -> bytes:
-    """Export extracted price list. Normalizes 'Цена по запросу' → 9999999."""
     rows = [
         {
             "#": i,
@@ -365,7 +335,6 @@ def export_price_list_excel(
 
 
 def export_matching_excel(matched_rows: list[dict]) -> bytes:
-    """Export matching results. Normalizes 'Цена по запросу' → 9999999."""
     cols = ["Название в MedPay", "Название в клинике", "ID",
             "Уверенность", "Комментарий", "Цена", "Тип услуг"]
     buf = io.BytesIO()
@@ -410,7 +379,6 @@ def export_ready_excel(
     clinic_name: str = "",
     district: str = "",
 ) -> bytes:
-    """Export final ready Excel."""
     buf = io.BytesIO()
     wb  = openpyxl.Workbook()
     ws  = wb.active
