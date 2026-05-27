@@ -38,6 +38,8 @@ from modules.utils import clean_cell, clean_price
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 EXCEL_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+if "OPENROUTER_API_KEY" in st.secrets:
+    os.environ["OPENROUTER_API_KEY"] = st.secrets["OPENROUTER_API_KEY"]
 
 ENTRY_INFO = {
     "A": ("A — HTML  →  Прайс  →  Матчинг  →  Ready",
