@@ -19,11 +19,16 @@ Price rule:
 Description lookup priority:
 - 1) descriptions_catalog.json by service ID (pre-generated)
 - 2) Template fallback (modules/templates.py)
+
+Name translation:
+- Имя UZ = OpenRouter/DeepSeek translation of Имя RU
+- Имя KR = transliteration of Имя UZ to Uzbek Cyrillic
 """
 import io
 import json
 import os
 import re
+import time
 import requests
 import pandas as pd
 import openpyxl
@@ -48,7 +53,6 @@ CATEGORY_MAP = {
     },
 }
 
-# Style constants
 THIN_BORDER = Border(
     left=Side(style="thin"),
     right=Side(style="thin"),
@@ -73,14 +77,98 @@ WIDE_COLS = {
 WIDE_COLS_MIN = 35
 WIDE_COLS_MAX = 55
 
-# Price sentinel
 PRICE_ON_REQUEST_SENTINEL = "9999999"
 PRICE_ON_REQUEST_LABELS   = {"цена по запросу", "по запросу", "price on request"}
 
+OPENROUTER_URL   = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_MODEL = "deepseek/deepseek-chat"
+
+
+# ── Name translation via OpenRouter ──────────────────────────────────────────
+
+def _translate_names_batch(names: list[str]) -> dict:
+    """
+    Translate a list of Russian medical service names to Uzbek Latin.
+    Returns {name_ru: name_uz} dict.
+    Falls back to original name on failure.
+    """
+    api_key = os.environ.get("OPENROUTER_API_KEY", "")
+    if not api_key:
+        print("[translate] No OPENROUTER_API_KEY — skipping translation")
+        return {}
+
+    results = {}
+    batch_size = 50
+
+    system_prompt = """Ты медицинский переводчик. Переводи названия медицинских услуг с русского на узбекский латинский алфавит.
+Отвечай ТОЛЬКО валидным JSON массивом. Никакого текста до или после. Формат:
+[{"ru":"...", "uz":"..."}]
+Правила:
+- Переводи точно, сохраняй медицинские термины
+- Латинские аббревиатуры (МРТ, КТ, УЗИ, ПЦР, ИФА) оставляй как есть или используй общепринятый узбекский вариант
+- Не добавляй лишних слов"""
+
+    for i in range(0, len(names), batch_size):
+        batch = names[i:i + batch_size]
+        items = "\n".join(f'{{"ru":"{n}"}}' for n in batch)
+        user_prompt = f"Переведи эти названия на узбекский латинский:\n{items}"
+
+        for attempt in range(3):
+            try:
+                resp = requests.post(
+                    OPENROUTER_URL,
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                        "HTTP-Referer": "https://medpay-automation.streamlit.app",
+                        "X-Title": "MedPay Name Translator",
+                    },
+                    json={
+                        "model": OPENROUTER_MODEL,
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user",   "content": user_prompt},
+                        ],
+                        "temperature": 0.1,
+                        "max_tokens": 4000,
+                    },
+                    timeout=60,
+                )
+                if resp.status_code == 429:
+                    time.sleep(30 * (attempt + 1))
+                    continue
+                if resp.status_code == 402:
+                    print("[translate] OpenRouter credits depleted")
+                    return results
+                resp.raise_for_status()
+                content = resp.json()["choices"][0]["message"]["content"].strip()
+                if content.startswith("```"):
+                    content = content.split("```")[1]
+                    if content.startswith("json"):
+                        content = content[4:]
+                    content = content.strip()
+                parsed = json.loads(content)
+                for entry in parsed:
+                    ru = entry.get("ru", "").strip()
+                    uz = entry.get("uz", "").strip()
+                    if ru and uz:
+                        results[ru] = uz
+                break
+            except Exception as e:
+                print(f"[translate] Attempt {attempt+1} failed: {e}")
+                if attempt < 2:
+                    time.sleep(5 * (attempt + 1))
+
+        time.sleep(1.0)
+
+    print(f"[translate] Translated {len(results)}/{len(names)} names")
+    return results
+
+
+# ── Descriptions catalog loader ───────────────────────────────────────────────
 
 def _load_desc_catalog() -> dict:
     """Load pre-generated descriptions catalog from HuggingFace or local fallback."""
-    # Try local paths first (Colab / local dev)
     local_paths = [
         "/content/drive/MyDrive/Medpay Automation/descriptions_catalog.json",
         "descriptions_catalog.json",
@@ -96,7 +184,6 @@ def _load_desc_catalog() -> dict:
             except Exception as e:
                 print(f"[desc_catalog] Failed to load {path}: {e}")
 
-    # Download from HuggingFace
     hf_token = os.environ.get("HF_TOKEN", "")
     hf_url = "https://huggingface.co/admin11011/medpay-matcher/resolve/main/descriptions_catalog.json"
     try:
@@ -106,11 +193,10 @@ def _load_desc_catalog() -> dict:
         resp.raise_for_status()
         data = resp.json()
         print(f"[desc_catalog] Downloaded {len(data)} entries from HuggingFace")
-        # Cache locally for faster reloads
         try:
             with open("descriptions_catalog.json", "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False)
-            print("[desc_catalog] Cached locally as descriptions_catalog.json")
+            print("[desc_catalog] Cached locally")
         except Exception:
             pass
         return data
@@ -120,6 +206,8 @@ def _load_desc_catalog() -> dict:
     print("[desc_catalog] All sources failed — using template fallback")
     return {}
 
+
+# ── Price helpers ─────────────────────────────────────────────────────────────
 
 def _normalize_price(price) -> str:
     val = str(price).strip()
@@ -176,6 +264,8 @@ def _apply_cell_style(cell, is_header: bool = False, col_name: str = ""):
         cell.alignment = Alignment(horizontal=h_align, vertical="center", wrap_text=True)
 
 
+# ── Main builder ──────────────────────────────────────────────────────────────
+
 def build_ready_df(
     matched_rows: list[dict],
     clinic_name: str,
@@ -184,7 +274,7 @@ def build_ready_df(
 ) -> pd.DataFrame:
     """Build final ready DataFrame with all 22 columns."""
 
-    # ── Load descriptions catalog ─────────────────────────────────────────────
+    # Load descriptions catalog
     try:
         desc_catalog = _load_desc_catalog()
     except Exception as e:
@@ -192,13 +282,23 @@ def build_ready_df(
         desc_catalog = {}
     print(f"[desc_catalog] Entries loaded: {len(desc_catalog)}")
 
-    # Normalize all prices first
+    # Normalize prices
     for row in matched_rows:
         row["Цена"] = _normalize_price(row.get("Цена", ""))
 
     has_on_request = _has_on_request_price(matched_rows)
     export_name    = _clinic_export_name(clinic_name, has_on_request)
     district       = _normalize_district(district.strip())
+
+    # Collect all unique clinic service names for translation
+    unique_names = list({
+        clean_cell(str(row.get("Название в клинике", "")))
+        for row in matched_rows
+        if clean_cell(str(row.get("ID", "-"))) not in ("-", "")
+        and clean_cell(str(row.get("Название в клинике", "")))
+    })
+    print(f"[translate] Translating {len(unique_names)} unique service names...")
+    name_translations = _translate_names_batch(unique_names)
 
     records = []
 
@@ -214,38 +314,32 @@ def build_ready_df(
         if service_type not in ("Диагностика", "Анализы"):
             service_type = "Диагностика"
 
-        # ── Catalog entry lookup (used for names AND descriptions) ────────────
+        # Catalog entry for descriptions
         catalog_entry = desc_catalog.get(str(service_id), {})
 
-        name_ru, name_uz, name_kr = clinic_svc, "-", "-"
+        # ── Names ─────────────────────────────────────────────────────────────
+        name_ru = clinic_svc  # always use clinic's original RU name
 
-        if service_id not in ("-", ""):
+        # Имя UZ = OpenRouter translation of clinic's RU name
+        name_uz = name_translations.get(clinic_svc, "")
+        if not name_uz:
+            # Fallback: catalog UZ name
             cat_row = catalog_df[catalog_df["ID number"] == service_id]
             if not cat_row.empty:
-                r = cat_row.iloc[0]
-                cat_uz = safe_str(r.get("Name UZ", ""))
-                cat_kr = safe_str(r.get("Name KR", ""))
-                if cat_uz and len(cat_uz) > 2 and (cat_uz[0].isupper() or cat_uz[0].isdigit()):
+                cat_uz = safe_str(cat_row.iloc[0].get("Name UZ", ""))
+                if cat_uz and len(cat_uz) > 2:
                     name_uz = cat_uz
-                else:
-                    # Fallback to descriptions_catalog name_uz
-                    name_uz = catalog_entry.get("name_uz", "-") or "-"
-                if cat_kr and len(cat_kr) > 2 and (cat_kr[0].isupper() or cat_kr[0].isdigit()):
-                    name_kr = cat_kr
-                else:
-                    # Fallback to descriptions_catalog name_kr
-                    name_kr = catalog_entry.get("name_kr", "-") or "-"
+            if not name_uz:
+                name_uz = catalog_entry.get("name_uz", "") or clinic_svc
+
+        # Имя KR = transliteration of Имя UZ
+        name_kr = uz_latin_to_cyrillic(name_uz) if name_uz else clinic_svc
 
         name_ru = clean_cell(name_ru)
         name_uz = clean_cell(name_uz)
-
-        if not name_kr or name_kr == "-":
-            name_kr = uz_latin_to_cyrillic(name_uz) if name_uz and name_uz != "-" else "-"
         name_kr = clean_cell(name_kr)
 
         # ── Descriptions and requirements ─────────────────────────────────────
-        # Priority: 1) descriptions_catalog.json  2) Template fallback
-
         if catalog_entry and catalog_entry.get("desc_ru", "").strip():
             desc_ru = clean_cell(catalog_entry.get("desc_ru", ""))
             desc_uz = clean_cell(catalog_entry.get("desc_uz", ""))
@@ -253,10 +347,8 @@ def build_ready_df(
             req_ru  = clean_cell(catalog_entry.get("req_ru", ""))
             req_uz  = clean_cell(catalog_entry.get("req_uz", ""))
             req_kr  = clean_cell(uz_latin_to_cyrillic(req_uz)) if req_uz else ""
-
             if not desc_kr and desc_uz:
                 desc_kr = clean_cell(uz_latin_to_cyrillic(desc_uz))
-
             texts = {
                 "Описание RU":   desc_ru,
                 "Описание UZ":   desc_uz,
@@ -299,6 +391,8 @@ def build_ready_df(
     return pd.DataFrame(records, columns=REQUIRED_COLUMNS)
 
 
+# ── Excel exporters ───────────────────────────────────────────────────────────
+
 def export_price_list_excel(
     services: list[dict], clinic_name: str, district: str
 ) -> bytes:
@@ -319,16 +413,13 @@ def export_price_list_excel(
 
     for ci, col in enumerate(df.columns, 1):
         _apply_cell_style(ws.cell(row=1, column=ci, value=col), is_header=True)
-
     for ri, row in enumerate(df.itertuples(index=False), 2):
         for ci, val in enumerate(row, 1):
             cell = ws.cell(row=ri, column=ci,
                            value=None if str(val) in ("", "nan") else val)
             _apply_cell_style(cell, col_name=df.columns[ci - 1])
-
     for ci, col in enumerate(df.columns, 1):
         ws.column_dimensions[get_column_letter(ci)].width = _calc_col_width(ws, ci, col)
-
     ws.freeze_panes = "A2"
     wb.save(buf)
     return buf.getvalue()
@@ -347,13 +438,11 @@ def export_matching_excel(matched_rows: list[dict]) -> bytes:
 
     for ci, col in enumerate(cols, 1):
         _apply_cell_style(ws.cell(row=1, column=ci, value=col), is_header=True)
-
     for ri, rec in enumerate(matched_rows, 2):
         id_val       = str(rec.get("ID", "")).strip()
         conf         = rec.get("Уверенность", 0)
         is_unmatched = id_val == "-"
         is_low_conf  = not is_unmatched and isinstance(conf, (int, float)) and conf < 90
-
         for ci, col in enumerate(cols, 1):
             val = rec.get(col, "")
             if col == "Цена":
@@ -365,10 +454,8 @@ def export_matching_excel(matched_rows: list[dict]) -> bytes:
                 cell.fill = red_fill
             elif is_low_conf:
                 cell.fill = yellow_fill
-
     for ci, col in enumerate(cols, 1):
         ws.column_dimensions[get_column_letter(ci)].width = _calc_col_width(ws, ci, col)
-
     ws.freeze_panes = "A2"
     wb.save(buf)
     return buf.getvalue()
@@ -389,12 +476,10 @@ def export_ready_excel(
 
     for ci, col in enumerate(REQUIRED_COLUMNS, 1):
         _apply_cell_style(ws.cell(row=1, column=ci, value=col), is_header=True, col_name=col)
-
     for ri in range(len(ready_df)):
         rec = ready_df.iloc[ri]
         for ci, col in enumerate(REQUIRED_COLUMNS, 1):
             raw = rec[col]
-
             if raw is None or str(raw).strip().lower() in ("nan", "none", ""):
                 val = None
             elif col in ("Код уз", "Код ру", "Код лаборатория"):
@@ -403,13 +488,10 @@ def export_ready_excel(
                 val = _normalize_price(str(raw))
             else:
                 val = clean_cell(str(raw)) or None
-
             cell = ws.cell(row=ri + 2, column=ci, value=val)
             _apply_cell_style(cell, col_name=col)
-
     for ci, col in enumerate(REQUIRED_COLUMNS, 1):
         ws.column_dimensions[get_column_letter(ci)].width = _calc_col_width(ws, ci, col)
-
     ws.row_dimensions[1].height = 25
     for ri in range(2, ws.max_row + 1):
         max_chars = max(
@@ -419,7 +501,6 @@ def export_ready_excel(
         )
         estimated_lines = max(1, max_chars // 40)
         ws.row_dimensions[ri].height = max(20, min(120, estimated_lines * 15))
-
     ws.freeze_panes = "A2"
     wb.save(buf)
     return buf.getvalue()
