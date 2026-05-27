@@ -986,7 +986,7 @@ elif page == "work":
             if st.button("➡️ Сгенерировать файл", type="primary",
                          key="btn_gen", disabled=bool(val_errs)):
                 try:
-                          rdf = _make_ready(edited_m.to_dict("records"), cat_df)
+                     rdf = _make_ready(edited_m.to_dict("records"), cat_df)
                     st.session_state["matched"]   = edited_m.to_dict("records")
                     st.session_state["ready_df"]  = rdf
                     st.session_state["work_step"] = "done"
