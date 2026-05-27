@@ -184,10 +184,10 @@ def build_ready_df(
     print(f"[DEBUG] desc_catalog entries: {len(desc_catalog)}")
     # ── Load descriptions catalog (pre-generated JSON) ────────────────────────
     try:
-    desc_catalog = _load_desc_catalog()
+        desc_catalog = _load_desc_catalog()
     except Exception as e:
-    print(f"[desc_catalog] Load error: {e}")
-    desc_catalog = {}
+        print(f"[desc_catalog] Load error: {e}")
+        desc_catalog = {}
     # Normalize all prices first
     for row in matched_rows:
         row["Цена"] = _normalize_price(row.get("Цена", ""))
