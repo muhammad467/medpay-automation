@@ -98,7 +98,7 @@ def _translate_names_batch(names: list[str]) -> dict:
         return {}
 
     results = {}
-    batch_size = 50
+    batch_size = 100
 
     system_prompt = """Ты медицинский переводчик. Переводи названия медицинских услуг с русского на узбекский латинский алфавит.
 Отвечай ТОЛЬКО валидным JSON массивом. Никакого текста до или после. Формат:
@@ -130,9 +130,9 @@ def _translate_names_batch(names: list[str]) -> dict:
                             {"role": "user",   "content": user_prompt},
                         ],
                         "temperature": 0.1,
-                        "max_tokens": 4000,
+                        "max_tokens": 6000,
                     },
-                    timeout=60,
+                    timeout=30,
                 )
                 if resp.status_code == 429:
                     time.sleep(30 * (attempt + 1))
@@ -159,7 +159,7 @@ def _translate_names_batch(names: list[str]) -> dict:
                 if attempt < 2:
                     time.sleep(5 * (attempt + 1))
 
-        time.sleep(1.0)
+        time.sleep(0.5)
 
     print(f"[translate] Translated {len(results)}/{len(names)} names")
     return results
