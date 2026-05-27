@@ -181,7 +181,7 @@ def build_ready_df(
     catalog_df: pd.DataFrame,
 ) -> pd.DataFrame:
     """Build final ready DataFrame with all 22 columns."""
-
+    print(f"[DEBUG] desc_catalog entries: {len(desc_catalog)}")
     # ── Load descriptions catalog (pre-generated JSON) ────────────────────────
     desc_catalog = _load_desc_catalog()
 
