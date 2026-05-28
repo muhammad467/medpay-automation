@@ -1020,13 +1020,13 @@ elif page == "work":
                 f"Типы: {', '.join(sorted(rdf['Тип услуг'].unique()))}"
             )
 
-        m1, m2, m3, m4, m5 = st.columns(5)
-        m1.metric("Строк",       len(rdf))
-        m2.metric("Диагностика", int((rdf["Тип услуг"] == "Диагностика").sum()))
-        m3.metric("Анализы",     int((rdf["Тип услуг"] == "Анализы").sum()))
-        m4.metric("С ID",        int((rdf["Услуга ID"] != "-").sum()))
-        m5.metric("По запросу",  int((rdf["Цена"] == "По запросу").sum()))
-
+        m1, m2, m3, m4, m5, m6 = st.columns(6)
+        m1.metric("Строк",              len(rdf))
+        m2.metric("Диагностика",        int((rdf["Тип услуг"] == "Диагностика").sum()))
+        m3.metric("Анализы",            int((rdf["Тип услуг"] == "Анализы").sum()))
+        m4.metric("Лечебная процедура", int((rdf["Тип услуг"] == "Лечебная процедура").sum()))
+        m5.metric("С ID",               int((rdf["Услуга ID"] != "-").sum()))
+        m6.metric("По запросу",         int((rdf["Цена"] == "По запросу").sum()))
         st.markdown("##### ✏️ Финальное редактирование (необязательно)")
         edited_r = st.data_editor(
             rdf, use_container_width=True, num_rows="dynamic",
