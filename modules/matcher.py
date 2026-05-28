@@ -1029,15 +1029,13 @@ LECH_PROC_MAP = {
 
 
 def _match_lech_proc(clinic_name: str, catalog_df) -> dict | None:
-    """
-    Match Лечебная процедура using longest substring match.
-    Longest match wins: 'колоноскопия с седацией' beats 'колоноскопия'.
-    """
     cn_lower = re.sub(r'\s+', ' ', clinic_name.lower().strip())
     best_id  = None
     best_len = 0
     for keyword, sid in LECH_PROC_MAP.items():
-        if keyword in cn_lower and len(keyword) > best_len:
+        # Match only if keyword appears as whole words (not as part of longer word)
+        pattern = r'(?<!\w)' + re.escape(keyword) + r'(?!\w)'
+        if re.search(pattern, cn_lower) and len(keyword) > best_len:
             best_id  = sid
             best_len = len(keyword)
     if not best_id:
