@@ -415,7 +415,7 @@ with st.sidebar:
                     name = c["name_ru"] or c["name_uz"]
                     rows_s.append({
                         "ID": sid,
-                        "Название": name[:60],
+                        "Название": name,
                         "Тип": ct,
                         "%": c["score"],
                     })
@@ -431,9 +431,19 @@ with st.sidebar:
                     seen_s.add(sid)
                     cr = cat_df[cat_df["ID number"] == sid]
                     ct = cr.iloc[0]["type"] if not cr.empty else "?"
-                    rows_s.append({"ID": sid, "Название": orig[:60], "Тип": ct, "%": sc})
+                    rows_s.append({"ID": sid, "Название": orig, "Тип": ct, "%": sc})
             if rows_s:
-                st.dataframe(pd.DataFrame(rows_s), use_container_width=True, hide_index=True)
+                st.dataframe(
+              pd.DataFrame(rows_s),
+              use_container_width=True,
+              hide_index=True,
+              column_config={
+                  "Название": st.column_config.TextColumn(width="large"),
+                  "ID":       st.column_config.TextColumn(width=90),
+                  "Тип":      st.column_config.TextColumn(width=90),
+                  "%":        st.column_config.NumberColumn(width=55),
+              }
+          )
             else:
                 st.info("Не найдено")
     else:
