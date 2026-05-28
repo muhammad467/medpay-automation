@@ -51,6 +51,11 @@ CATEGORY_MAP = {
         "Категория UZ": "Diagnostika",
         "Категория KR": "Диагностика",
     },
+    "Лечебная процедура": {
+        "Категория RU": "Лечебная процедура",
+        "Категория UZ": "Davolash protsedurasi",
+        "Категория KR": "Даволаш процедураси",
+    },
 }
 
 THIN_BORDER = Border(
@@ -311,8 +316,8 @@ def build_ready_df(
         clinic_svc   = clean_cell(str(row.get("Название в клинике", "")))
         price        = row.get("Цена", PRICE_ON_REQUEST_SENTINEL)
 
-        if service_type not in ("Диагностика", "Анализы"):
-            service_type = "Диагностика"
+        if service_type not in ("Диагностика", "Анализы", "Лечебная процедура"):
+            service_type = " "
 
         # Catalog entry for descriptions
         catalog_entry = desc_catalog.get(str(service_id), {})
