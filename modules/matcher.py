@@ -34,7 +34,7 @@ from modules.utils import clean_cell, safe_str
 _MODEL_DIR = Path(__file__).parent.parent / "medpay_model"
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-ALLOWED_CATALOG_TYPES = {"Анализы", "Анализ", "Диагностика"}
+ALLOWED_CATALOG_TYPES = {"Анализы", "Анализ", "Диагностика", "Лечебная процедура"}
 
 # Minimum confidence to assign an ID
 MIN_CONFIDENCE = 70  # below this → _no_match()
