@@ -1,7 +1,7 @@
 import re
 import pandas as pd
 
-ALLOWED_TYPES = {"Диагностика", "Анализы"}
+ALLOWED_TYPES = {"Диагностика", "Анализы", "Лечебная процедура"}
 REQUIRED_COLUMNS = [
     "Услуга ID", "Клиника", "Филиал", "Имя RU", "Имя UZ", "Имя KR",
     "Описание UZ", "Требования UZ", "Требования RU", "Требования KR",
@@ -30,8 +30,12 @@ VALID_CATEGORIES = {
         "Категория UZ": "Diagnostika",
         "Категория KR": "Диагностика",
     },
+    "Лечебная процедура": {
+        "Категория RU": "Лечебная процедура",
+        "Категория UZ": "Davolash protsedurasi",
+        "Категория KR": "Даволаш процедураси",
+    },
 }
-
 
 def validate_matching_row(row: dict, catalog_df: pd.DataFrame) -> list[str]:
     """Validate a single matching row. Returns list of error strings."""
