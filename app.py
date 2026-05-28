@@ -433,7 +433,7 @@ with st.sidebar:
                     ct = cr.iloc[0]["type"] if not cr.empty else "?"
                     rows_s.append({"ID": sid, "Название": orig, "Тип": ct, "%": sc})
             if rows_s:
-                for row in rows_s[:10]:
+                for row in rows_s[:30]:
                     st.markdown(
                         f"`{row['ID']}` **{row['%']:.0f}%** {row['Тип'][:4]}  \n{row['Название']}"
                     )
