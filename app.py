@@ -421,8 +421,8 @@ with st.sidebar:
                     })
             else:
                 corp_s = build_search_corpus(cat_df)
-                hits   = rfp.extract(sq.lower(), [c[0] for c in corp_s],
-                                     scorer=rff.token_sort_ratio, limit=9823, score_cutoff=40)
+                hits = rfp.extract(sq.lower(), [c[0] for c in corp_s],
+                   scorer=rff.token_sort_ratio, limit=9823, score_cutoff=35)
                 seen_s: set = set()
                 for _, sc, ix in hits:
                     _, orig, sid = corp_s[ix]
