@@ -62,9 +62,9 @@ def _med24_category_from_href(href: str) -> str | None:
         return "Диагностика"
     if MED24_ANALIZY_PREFIX in h:
         return "Анализы"
-    # /uslugi/* but not /uslugi/analizy = medical procedure → exclude
+    # /uslugi/* but not /uslugi/analizy = medical procedure → Лечебная процедура
     if "med24.uz/uslugi/" in h:
-        return None
+      return "Лечебная процедура"
     # Unknown URL - fall back to keyword classification
     return "UNKNOWN"
 
@@ -298,9 +298,10 @@ def _extract_med24_structured(soup: BeautifulSoup) -> list[dict]:
         category = _med24_category_from_href(href)
 
         if category is None:
-            # This service belongs to surgery/procedures — skip entirely
-            excluded_count += 1
-            continue
+          excluded_count += 1
+          continue
+# Лечебная процедура services are kept but will be filtered
+# later in _run_matching if include_lech=False
 
         if category == "UNKNOWN":
             # Unknown URL format — use keyword fallback
