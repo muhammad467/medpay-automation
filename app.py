@@ -433,17 +433,11 @@ with st.sidebar:
                     ct = cr.iloc[0]["type"] if not cr.empty else "?"
                     rows_s.append({"ID": sid, "Название": orig, "Тип": ct, "%": sc})
             if rows_s:
-                st.dataframe(
-              pd.DataFrame(rows_s),
-              use_container_width=True,
-              hide_index=True,
-              column_config={
-                  "Название": st.column_config.TextColumn(width="large"),
-                  "ID":       st.column_config.TextColumn(width=90),
-                  "Тип":      st.column_config.TextColumn(width=90),
-                  "%":        st.column_config.NumberColumn(width=55),
-              }
-          )
+                for row in rows_s[:10]:
+                    st.markdown(
+                        f"`{row['ID']}` **{row['%']:.0f}%** {row['Тип'][:4]}  \n{row['Название']}"
+                    )
+                    st.divider()
             else:
                 st.info("Не найдено")
     else:
