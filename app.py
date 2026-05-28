@@ -404,7 +404,7 @@ with st.sidebar:
                 candidates = em.search(sq.strip(), k=9823)
                 seen_s: set = set()
                 for c in candidates:
-                    if c["score"] < 50:
+                    if c["score"] < 30:
                         break
                     sid = c["service_id"]
                     if sid in seen_s:
@@ -433,9 +433,9 @@ with st.sidebar:
                     ct = cr.iloc[0]["type"] if not cr.empty else "?"
                     rows_s.append({"ID": sid, "Название": orig, "Тип": ct, "%": sc})
             if rows_s:
-                for row in rows_s[:30]:
+                for row in rows_s:
                     st.markdown(
-                        f"`{row['ID']}` **{row['%']:.0f}%** {row['Тип'][:4]}  \n{row['Название']}"
+                        f"`{row['ID']}` **{row['%']:.0f}%** {row['Тип']}  \n{row['Название']}"
                     )
                     st.divider()
             else:
