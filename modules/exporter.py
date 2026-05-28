@@ -89,10 +89,14 @@ PRICE_ON_REQUEST_LABELS   = {"цена по запросу", "по запрос�
 OPENROUTER_URL   = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_MODEL = "deepseek/deepseek-chat"
 
-# add cashign for streamlit memory
+# add cashing for streamlit memory
 @st.cache_resource
 def _load_desc_catalog_cached() -> dict:
-    return _load_desc_catalog()
+    try:
+        return _load_desc_catalog()
+    except Exception as e:
+        print(f"[desc_catalog] Load error: {e}")
+        return {}
     
 # ── Name translation via OpenRouter ──────────────────────────────────────────
 
