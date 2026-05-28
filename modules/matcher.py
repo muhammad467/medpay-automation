@@ -49,6 +49,9 @@ LABEL_CHECK = 70   # "Проверить вручную"
 # Essential for short abbreviations: АСТ, ТТГ, ОАК etc.
 _EXPAND_MAP = {
     # Lab abbreviations
+"сут.моче":    "суточная моча скорость выведения суточный",
+"сут.мочи":   "суточная моча скорость выведения суточный",
+"(в сут":     "суточная моча выведение",
     "АСТ":    "АСТ аспартатаминотрансфераза",
     "АЛТ":    "АЛТ аланинаминотрансфераза",
     "АЛАТ":   "АЛАТ аланинаминотрансфераза",
@@ -828,7 +831,37 @@ _EXPAND_MAP = {
     "Отделяемое из глаза": "бактериологический посев конъюнктива глаз",
     "aorta":           "аорта",
 }
-
+# ── Material-specific forced matches ─────────────────────────────────────────
+MATERIAL_FORCED = {
+    # (substring_in_clinic_name_lower, catalog_id)
+    # Суточная моча
+    "кальций": {
+        "сут": "1005750",   # суточная моча
+        "моч": "1005735",   # просто моча
+    },
+    "креатинин": {
+        "сут": "1149434",
+        "моч": "1006485",
+    },
+    "белок": {
+        "сут": "1003177",
+        "моч": "1003169",
+    },
+    "магний": {
+        "сут": "1149483",
+        "моч": "1005586",
+    },
+    # Wrong method fixes
+    "кальцитонин": {
+        "default": "1011907",
+    },
+    "калий": {
+        "default": "1005495",
+    },
+    "фибриноген": {
+        "default": "1000140",
+    },
+}
 # ── Noise patterns to strip before matching ───────────────────────────────────
 _NOISE_PATTERNS = [
     r"\bсвис\s+лаб\b", r"\bswiss\s+lab\b", r"\bинвитро\b", r"\bгемотест\b", r"\bкдл\b",
@@ -1053,7 +1086,37 @@ def _match_lech_proc(clinic_name: str, catalog_df) -> dict | None:
                              "score": 92, "type": "Лечебная процедура"}],
         "method":          "lech_proc_table",
     }
+def _match_material_forced(clinic_name: str, catalog_df) -> dict | None:
+    """
+    Handle material-specific mismatches (моча vs кровь, wrong method etc).
+    Only triggers on exact known patterns — does not guess.
+    """
+    cn = clinic_name.lower().strip()
 
+    for main_kw, variants in MATERIAL_FORCED.items():
+        if main_kw not in cn:
+            continue
+        sid = None
+        for sub_kw, forced_id in variants.items():
+            if sub_kw == "default" or sub_kw in cn:
+                sid = forced_id
+                break
+        if not sid:
+            continue
+        cat_row = catalog_df[catalog_df["ID number"] == sid]
+        if cat_row.empty:
+            continue
+        name = safe_str(cat_row.iloc[0].get("Name RU", sid))
+        return {
+            "matched_name":    name,
+            "matched_id":      sid,
+            "confidence":      93,
+            "comment":         "Принудительное совпадение (материал)",
+            "top3_candidates": [{"service_id": sid, "name": name,
+                                 "score": 93, "type": "Анализы"}],
+            "method":          "material_forced",
+        }
+    return None
 # ═══════════════════════════════════════════════════════════════════════════════
 # MODEL ENGINE  (fine-tuned sentence-transformers + FAISS)
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1330,6 +1393,17 @@ def match_service(
     # ── Forced matches for known persistent wrong matches ────────────────────
     # These override the model when specific patterns are detected
     FORCED_MATCHES = {
+      # ── Premium Medline specific fixes ───────────────────────────────────────────
+        # Суточная моча — must not match blood variants
+        'Кальций (в сут.моче)':     '1005750',  # Кальций, массовая скорость выведения с суточной мочой
+        'Кальций в сут':            '1005750',
+        'Креатинин (в сут.моче)':   '1149434',  # Креатинин, массовая скорость выведения с суточной мочой
+        'Креатинин в сут':          '1149434',
+        'Общий белок (в сут.моче)': '1003177',  # Белок общий, массовая скорость выведения с суточной мочой
+        'Белок в сут':              '1003177',
+        'Магний (в сут.моче)':      '1149483',  # Магний, массовая концентрация в суточной моче
+        'Магний в сут':             '1149483',
+
         # Allergens
         'F262':      '1058114',  # баклажан IgE
         'Eggplant':  '1058114',
@@ -1356,11 +1430,16 @@ def match_service(
                                          'score': 95, 'type': 'Анализы'}],
                     'method':          'forced',
                 }
-    # ── Лечебная процедура keyword lookup ─────────────────────────────────────
+      # ── Лечебная процедура keyword lookup ─────────────────────────────────────
     lech_match = _match_lech_proc(clinic_name, catalog_df)
     if lech_match:
         return lech_match
-      
+
+    # ── Material-specific forced matches ──────────────────────────────────────
+    material_match = _match_material_forced(clinic_name, catalog_df)
+    if material_match:
+        return material_match
+
     if not clinic_name:
         return _no_match()
 
