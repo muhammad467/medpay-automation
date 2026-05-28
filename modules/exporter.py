@@ -31,6 +31,7 @@ import re
 import time
 import requests
 import pandas as pd
+import streamlit as st
 import openpyxl
 from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
 from openpyxl.utils import get_column_letter
@@ -88,7 +89,11 @@ PRICE_ON_REQUEST_LABELS   = {"цена по запросу", "по запрос�
 OPENROUTER_URL   = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_MODEL = "deepseek/deepseek-chat"
 
-
+# add cashign for streamlit memory
+@st.cache_resource
+def _load_desc_catalog_cached() -> dict:
+    return _load_desc_catalog()
+    
 # ── Name translation via OpenRouter ──────────────────────────────────────────
 
 def _translate_names_batch(names: list[str]) -> dict:
@@ -281,7 +286,7 @@ def build_ready_df(
 
     # Load descriptions catalog
     try:
-        desc_catalog = _load_desc_catalog()
+        desc_catalog = _load_desc_catalog_cached()    
     except Exception as e:
         print(f"[desc_catalog] Load error: {e}")
         desc_catalog = {}
