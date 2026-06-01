@@ -142,9 +142,22 @@ def _is_excluded_service(name: str) -> bool:
     return False
 
 
+_LECH_PROC_KW = [
+    # Russian
+    "массаж", "консультация", "инъекция", "капельница",
+    "физиотерапия", "процедура", "блокада", "озонотерапия",
+    # Uzbek Latin
+    "massaj", "massaji", "maslahati", "muolaja", "plastika",
+    "terapiya", "davolash", "ukol", "tomchilatma",
+    "fizioterapiya", "konsultatsiya",
+]
+
 def classify_type(name: str) -> str:
-    """Classify service as Анализы or Диагностика based on keywords."""
+    """Classify service as Анализы, Диагностика or Лечебная процедура."""
     n = name.lower()
+    for kw in _LECH_PROC_KW:
+        if kw in n:
+            return "Лечебная процедура"
     for kw in _ANALYSIS_KW:
         if kw in n:
             return "Анализы"
